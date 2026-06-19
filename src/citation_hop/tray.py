@@ -132,7 +132,7 @@ def _app_title() -> str:
 # Signal handlers can only run on the main Python thread, and only at
 # the next bytecode boundary, so this is best-effort — but when it
 # fires, the message is much more actionable than a raw SIGILL.
-_FATAL_SIGNAL_HINTS = {
+_FATAL_SIGNAL_HINTS: dict = {
     signal.SIGILL: (
         "SIGILL (illegal hardware instruction) — typically a macOS "
         "Quartz / CGEventTap issue.  Try: 1) grant Accessibility "
@@ -145,11 +145,15 @@ _FATAL_SIGNAL_HINTS = {
         "or pyperclip.  Try granting Accessibility permission (see "
         "above) and restarting."
     ),
-    signal.SIGBUS: (
+}
+# SIGBUS is a POSIX-only signal (BSD-style bus error).  On Windows the
+# ``signal`` module doesn't expose it; referencing it at import time
+# raises AttributeError and breaks `from citation_hop import tray`.
+if hasattr(signal, "SIGBUS"):
+    _FATAL_SIGNAL_HINTS[signal.SIGBUS] = (
         "SIGBUS — typically a memory-alignment / Quartz issue.  See "
         "Accessibility permission steps in SIGILL hint above."
-    ),
-}
+    )
 
 
 def _install_signal_handlers() -> None:
