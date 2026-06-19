@@ -370,15 +370,27 @@ def keystroke_label(combination: str) -> str:
       ``<cmd>+<shift>+d``   →  ``⌘⇧D``
       ``<ctrl>+<alt>+<f5>`` →  ``⌃⌥F5``
 
-    Examples (Windows / Linux):
-      ``<cmd>+<shift>+d``   →  ``Ctrl+Shift+D``
+    Examples (Windows):
+      ``<cmd>+<shift>+d``   →  ``Win+Shift+D``
+      ``<ctrl>+<alt>+<f5>`` →  ``Ctrl+Alt+F5``
+
+    Examples (Linux):
+      ``<cmd>+<shift>+d``   →  ``Win+Shift+D``
       ``<ctrl>+<alt>+<f5>`` →  ``Ctrl+Alt+F5``
 
     On macOS modifiers are joined with no separator (Apple Human
     Interface Guidelines convention).  On Windows / Linux they are
-    joined with ``+``.  Unknown keys pass through with light cleanup
-    (capitalised, ``<f1>`` → ``F1``).  Empty / ``None`` input
-    returns ``""``.
+    joined with ``+``.
+
+    Note: pynput's ``<cmd>`` token maps to the macOS Command key on
+    macOS, the Windows / Super key on Windows, and the Super key on
+    Linux.  We render the binding **literally** so users see what
+    pynput will actually do — there is no silent "translate cmd to
+    ctrl" step.  If a user wants a portable binding they should pick
+    ``<ctrl>`` explicitly in their config.
+
+    Unknown keys pass through with light cleanup (capitalised,
+    ``<f1>`` → ``F1``).  Empty / ``None`` input returns ``""``.
     """
     if not combination:
         return ""

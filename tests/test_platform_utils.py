@@ -39,18 +39,26 @@ _MAC_CASES = [
 ]
 
 _WIN_CASES = [
-    ("<cmd>+d",                              "Ctrl+D"),
-    ("<cmd>+<shift>+d",                      "Ctrl+Shift+D"),
+    # pynput's <cmd> is the macOS Command key, but on Windows it maps
+    # to the actual Windows / Super key.  We render the binding
+    # literally (so users see what pynput will *actually* do), not
+    # after any friendly "translate" step.  If the user wanted Ctrl+D
+    # they should write <ctrl>+d.
+    ("<cmd>+d",                              "Win+D"),
+    ("<cmd>+<shift>+d",                      "Win+Shift+D"),
     ("<ctrl>+<alt>+<f5>",                    "Ctrl+Alt+F5"),
     ("<alt_l>+<shift_r>+<space>",            "Alt+Shift+Space"),
     ("<caps_lock>",                          "CapsLock"),
     ("<page_down>",                          "PageDown"),
     ("<up>",                                 "↑"),
-    ("<cmd>+<right>",                        "Ctrl+→"),
+    ("<cmd>+<right>",                        "Win+→"),
 ]
 
 _LINUX_CASES = [
-    ("<cmd>+d",                              "Ctrl+D"),
+    # pynput's <cmd> on Linux maps to the Super / Win key (same as
+    # Windows).  We use the "Win" word label to keep Windows / Linux
+    # display consistent.
+    ("<cmd>+d",                              "Win+D"),
     ("<ctrl>+<alt>+<f5>",                    "Ctrl+Alt+F5"),
     ("<page_up>",                            "PageUp"),
 ]
