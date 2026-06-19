@@ -151,3 +151,22 @@ If something fails, capture:
 6. **Python version**: `python --version`
 
 Open an issue at https://github.com/ShiyangZheng/citation-hop/issues
+
+---
+
+## Cross-platform test matrix (automated CI)
+
+`citationHop` is **CI-tested on every commit** across 9 OS × Python
+combinations — the same `tests/` suite and the same `scripts/smoke_test.py`
+that this Windows checklist runs locally is what GitHub Actions executes
+on all three operating systems:
+
+| OS | Python 3.11 | Python 3.12 | Python 3.13 |
+|---|---|---|---|
+| `ubuntu-latest` | ✅ | ✅ | ✅ |
+| `macos-latest` | ✅ | ✅ | ✅ |
+| `windows-latest` | ✅ | ✅ | ✅ |
+
+So if this checklist passes on Windows, the macOS and Linux paths are
+already covered by the CI green check on the same commit. See
+`.github/workflows/test.yml` for the full matrix.

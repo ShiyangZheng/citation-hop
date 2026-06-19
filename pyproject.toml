@@ -5,12 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "citation-hop"
 version = "1.1.1"
-description = "macOS / Windows / Linux menu-bar app: select a citation, press a hotkey, open the paper."
+description = "Fully cross-platform (macOS / Windows / Linux) menu-bar / system-tray app: select a citation anywhere, press a hotkey, open the paper. Native tray, global hotkey, 15 search engines."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Shiyang Zheng", email = "syz@shiyangzheng.top" }]
 requires-python = ">=3.10"
-keywords = ["doi", "citation", "literature", "menu-bar", "rumps", "pystray", "pynput"]
+keywords = [
+    "doi", "citation", "literature", "academic", "research",
+    "menu-bar", "system-tray", "status-notifier",
+    "cross-platform", "macos", "windows", "linux",
+    "rumps", "pystray", "pynput",
+]
 
 # Runtime dependencies — mirror requirements.txt.  Keep these in sync.
 dependencies = [

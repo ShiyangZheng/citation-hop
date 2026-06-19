@@ -1,9 +1,22 @@
 # citationHop
 
+> **A fully cross-platform menu-bar / system-tray app for opening academic papers.**
+> **Works natively on macOS, Windows, and Linux — one codebase, three native UIs.**
+
+| ![macOS](https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white) | ![Windows](https://img.shields.io/badge/Windows-0078D6?style=flat-square&logo=windows&logoColor=white) | ![Linux](https://img.shields.io/badge/Linux-FCC624?style=flat-square&logo=linux&logoColor=black) |
+| :---: | :---: | :---: |
+| Menu bar (top right) | System tray (bottom right) | Status notifier (panel) |
+| ✅ Native (rumps) | ✅ Native (Win32) | ✅ Native (AppIndicator) |
+
+![CI](https://img.shields.io/badge/CI-9%20OS%E2%80%93Python%20combos%20%E2%9C%93-success?style=flat-square)
+![Python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.13-blue?style=flat-square&logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
+
 > Select a citation anywhere. Press a hotkey. Get the paper.
 
-`citationHop` is a tiny cross-platform menu-bar / system-tray app.
-Select any chunk of text that looks like a literature reference
+`citationHop` is a tiny **fully cross-platform** menu-bar / system-tray app
+that runs **natively on macOS, Windows, and Linux** from a single Python
+codebase. Select any chunk of text that looks like a literature reference
 (APA / MLA / Chicago / BibTeX / RIS) and press the global hotkey
 (default **Cmd + Shift + L** on macOS, **Ctrl + Shift + L** on
 Windows / Linux). It will:
@@ -20,10 +33,33 @@ No GUI, no dock icon, no friction. A blue "C" pin sits in your menu bar
 
 ---
 
+## 🌍 Cross-platform — truly, not "cross-platform on paper"
+
+`citationHop` was built from day one as a **single Python codebase that
+compiles to a native experience on every desktop OS**. There is no
+Electron wrapper, no web view, no per-OS fork — just one
+`tray.py` that talks to whichever native tray backend your OS provides.
+
+| Layer | macOS | Windows | Linux |
+|---|---|---|---|
+| **Tray icon** | Menu bar (rumps) | System tray (pystray + Win32) | Status notifier (pystray + AppIndicator) |
+| **Global hotkey** | pynput HID event tap | pynput Win32 hook | pynput X11 hook |
+| **Selection capture** | AppleScript (`osascript`) | `Ctrl+C` via pyperclip | `Ctrl+C` via pyperclip |
+| **Notification** | Native Notification Center (rumps) | Native Windows toast (plyer) | libnotify (plyer) |
+| **Config dir** | `~/Library/Application Support/citationHop/` | `%APPDATA%\citationHop\` | `~/.config/citationHop/` |
+
+**CI matrix — all 9 jobs green on every commit:**
+`ubuntu-latest` × 3.11/3.12/3.13 · `macos-latest` × 3.11/3.12/3.13 ·
+`windows-latest` × 3.11/3.12/3.13. See
+`.github/workflows/test.yml`.
+
+---
+
 ## Highlights
 
-* **Cross-platform.** macOS menu bar, Windows system tray, Linux
-  status notifier — all share the same code path.
+* **🌍 Fully cross-platform.** macOS menu bar, Windows system tray,
+  Linux status notifier — one codebase, three native UIs. **CI tested
+  on 9 OS × Python combinations** (3 OSes × Python 3.11/3.12/3.13).
 * **Customisable search engines.** Ships with 15 mainstream platforms
   (Crossref, doi.org, Google Scholar, Semantic Scholar, OpenAlex,
   arXiv, PubMed, DBLP, BASE, Connected Papers, Litmaps, ResearchGate,
