@@ -97,13 +97,27 @@ def check_config_io() -> None:
             cfg_mod._config_dir = lambda: Path(td)  # type: ignore[attr-defined]
             cfg_mod.config_path = lambda: Path(td) / "config.json"  # type: ignore[assignment]
 
+            # 1. Bare modifier form (legacy v1.0 storage) must be
+            #    normalised to pynput 1.8+ angle-bracket form on load.
             cfg = load_config()
             cfg["hotkey"] = "ctrl+shift+d"
             save_config(cfg)
 
             cfg2 = load_config()
-            assert cfg2["hotkey"] == "ctrl+shift+d", f"hotkey not preserved: {cfg2}"
-            engines = engines_from_dicts(cfg2["engines"])
+            assert cfg2["hotkey"] == "<ctrl>+<shift>+d", (
+                f"bare hotkey not normalised: {cfg2['hotkey']!r}"
+            )
+
+            # 2. Already-normalised form must round-trip identity.
+            cfg2["hotkey"] = "<ctrl>+<shift>+d"
+            save_config(cfg2)
+
+            cfg3 = load_config()
+            assert cfg3["hotkey"] == "<ctrl>+<shift>+d", (
+                f"hotkey not preserved: {cfg3['hotkey']!r}"
+            )
+
+            engines = engines_from_dicts(cfg3["engines"])
             assert len(engines) >= 3
             print(f"  round-tripped config OK, {len(engines)} engines")
         finally:
