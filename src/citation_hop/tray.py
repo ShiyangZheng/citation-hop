@@ -8,7 +8,7 @@ The menu structure:
 
     [icon] Enabled                          ✓
     --------
-    [icon] Hotkey: cmd+shift+l          >   Change hotkey…
+    [icon] Hotkey: <cmd>+<shift>+l      >   Change hotkey…
     [icon] Search engines               >   ✓ Crossref
                                             ✓ doi.org
                                             ☐ Sci-Hub
@@ -189,8 +189,11 @@ class CitationHopTray:
         msg = (
             f"Current hotkey: {keystroke_label(self.cfg['hotkey'])}\n\n"
             "To change it, edit the 'hotkey' field in the config file "
-            "using pynput GlobalHotKeys syntax, e.g.\n"
-            "  cmd+shift+l   ctrl+alt+d   ctrl+shift+x\n\n"
+            "using pynput GlobalHotKeys syntax.  Modifiers (cmd, ctrl, "
+            "shift, alt, …) must be wrapped in angle brackets; the "
+            "trailing key is a single character.  Examples:\n"
+            "  <cmd>+<shift>+l   <ctrl>+<alt>+d   <ctrl>+<shift>+x\n\n"
+            "Note: on macOS use <cmd>; on Windows / Linux use <ctrl>.\n\n"
             "Open the config file now?"
         )
         if confirm("Change hotkey", msg, default=True):

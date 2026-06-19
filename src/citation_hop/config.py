@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List
@@ -28,11 +29,54 @@ from .engines import (
 from .platform_utils import IS_DARWIN, IS_WIN
 
 APP_NAME = "citationHop"
-# pynput GlobalHotKeys syntax.  Use the OS-native modifier: macOS = cmd,
-# Windows / Linux = ctrl.  The bare combo is the same on all platforms.
-DEFAULT_HOTKEY = "cmd+shift+l" if IS_DARWIN else "ctrl+shift+l"
+# pynput 1.8+ GlobalHotKeys syntax: modifier keys must be wrapped in
+# angle brackets (e.g. ``<cmd>``, ``<ctrl>``, ``<shift>``), and the
+# ``cmd`` token means the macOS Command key only.  Use the OS-native
+# modifier: macOS = cmd, Windows / Linux = ctrl.  The trailing key
+# (``l`` here) is a single-character literal — no brackets needed.
+DEFAULT_HOTKEY = "<cmd>+<shift>+l" if IS_DARWIN else "<ctrl>+<shift>+l"
 DEFAULT_MAILTO = "syz@shiyangzheng.top"
 DEFAULT_THRESHOLD = 0.85
+
+
+# ---------------------------------------------------------------------------
+# Hotkey migration
+# ---------------------------------------------------------------------------
+# Older versions of citationHop stored the hotkey in the bare-token form
+# (``cmd+shift+l``), which pynput 1.7 accepted but pynput 1.8+ rejects
+# with ``ValueError: cmd`` (and ``ValueError: shift`` for any other bare
+# modifier).  To keep existing users' config files valid, we normalise
+# the hotkey to the angle-bracketed form on load.  Two transformations
+# are applied:
+#
+# 1. Any bare modifier token (cmd / ctrl / alt / shift, plus their
+#    ``_l`` / ``_r`` variants) is wrapped in angle brackets.
+# 2. On non-Darwin platforms, ``cmd`` (bare or bracketed) is rewritten
+#    to ``<ctrl>`` so the combo is valid on the host OS.
+#
+# After this passes, the string is guaranteed parseable by
+# ``pynput.keyboard.HotKey.parse`` on the current platform.
+_BARE_MODIFIER_RE = re.compile(
+    r"(?<!<)\b(alt|ctrl|shift|cmd)(?:_[lr]|_gr)?\b(?!>)",
+    re.IGNORECASE,
+)
+_BARE_CMD_RE = re.compile(r"(?<!<)\bcmd\b(?!>)", re.IGNORECASE)
+
+
+def _normalise_hotkey(s: str) -> str:
+    """Return ``s`` rewritten into a pynput 1.8+ parseable form.
+
+    Public-ish for testability.  Two passes:
+
+    1. ``cmd`` → ``ctrl`` on non-Darwin (catches the bare-token case
+       before the bracket pass).
+    2. Wrap any remaining bare modifier tokens in ``<...>``.
+    """
+    out = s.strip()
+    if not IS_DARWIN:
+        out = _BARE_CMD_RE.sub("ctrl", out)
+    out = _BARE_MODIFIER_RE.sub(r"<\1>", out)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -124,17 +168,20 @@ def load_config() -> Dict[str, Any]:
         if k in merged:
             merged[k] = v
 
-    # Normalise a stale hotkey for the current platform: a macOS-style
-    # "cmd+..." combo crashes pynput on Windows / Linux.  Only swap when
-    # "cmd" is not actually a valid key on this platform — on macOS we
-    # leave it alone.
-    if not IS_DARWIN and isinstance(merged.get("hotkey"), str):
-        hk = merged["hotkey"].strip().lower()
-        # "cmd" may appear as a bare token, e.g. "cmd+shift+l" or with
-        # spaces / aliases like "<cmd>+<shift>+l".  Replace the token
-        # only, leave everything else intact.
-        import re
-        merged["hotkey"] = re.sub(r"\bcmd\b", "ctrl", hk)
+    # Normalise a stale hotkey for the current platform: older versions
+    # of citationHop stored ``cmd+shift+l`` (bare tokens), which pynput
+    # 1.8+ rejects with ``ValueError: cmd``.  ``_normalise_hotkey``
+    # wraps bare modifiers in angle brackets and rewrites ``cmd`` to
+    # ``<ctrl>`` on non-Darwin so the saved string round-trips through
+    # pynput's parser.
+    if isinstance(merged.get("hotkey"), str):
+        normalised = _normalise_hotkey(merged["hotkey"])
+        if normalised != merged["hotkey"]:
+            # Persist the migrated form so subsequent loads are
+            # migration-free.  We only save when something actually
+            # changed to avoid unnecessary disk writes.
+            merged["hotkey"] = normalised
+            save_config(merged)
 
     # Reconcile engine list: keep the user's engines (in their order)
     # but append any default engines that aren't present, so newly-
@@ -212,4 +259,5 @@ __all__ = [
     "DEFAULT_MAILTO",
     "DEFAULT_THRESHOLD",
     "APP_NAME",
+    "_normalise_hotkey",
 ]
