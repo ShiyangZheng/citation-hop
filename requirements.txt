@@ -1,0 +1,9 @@
+rumps>=0.4.0
+pynput>=1.7.7
+pyperclip>=1.8.2
+requests>=2.31.0
+pyobjc-framework-Cocoa>=10.0
+
+# Dev / test
+pytest>=8.0
+responses>=0.25
