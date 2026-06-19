@@ -283,11 +283,19 @@ def simulate_copy() -> None:
     except Exception:  # pragma: no cover
         return
 
-    kb = Controller()
-    kb.press(Key.ctrl)
-    kb.press("c")
-    kb.release("c")
-    kb.release(Key.ctrl)
+    # pynput.keyboard imports cleanly on most hosts, but Controller()
+    # instantiation can still fail on stripped CI images (no X server,
+    # missing libgtk, etc.).  Treat any failure as a silent no-op —
+    # the hotkey will still fire, just without a fresh selection
+    # capture.
+    try:
+        kb = Controller()
+        kb.press(Key.ctrl)
+        kb.press("c")
+        kb.release("c")
+        kb.release(Key.ctrl)
+    except Exception:  # noqa: BLE001
+        LOG.debug("pynput Controller failed on %s", SYSTEM, exc_info=True)
 
 
 def _simulate_copy_applescript() -> None:
