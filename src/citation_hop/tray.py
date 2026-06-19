@@ -55,6 +55,7 @@ from .engines import (
 from .main import lookup
 from .platform_utils import (
     confirm,
+    keystroke_label,
     load_tray_icon,
     notify,
     open_path,
@@ -95,7 +96,7 @@ class CitationHopTray:
             Item("Enabled", self._on_toggle_enabled, checked=lambda i: self.enabled),
             Menu.SEPARATOR,
             Item(
-                "Hotkey: " + self.cfg["hotkey"],
+                "Hotkey: " + keystroke_label(self.cfg["hotkey"]),
                 Menu(
                     Item("Change hotkey…", self._on_change_hotkey),
                 ),
@@ -186,7 +187,7 @@ class CitationHopTray:
         # For a quick UX, we just pop a message telling them what to
         # do, then open the config file in their default editor.
         msg = (
-            f"Current hotkey: {self.cfg['hotkey']}\n\n"
+            f"Current hotkey: {keystroke_label(self.cfg['hotkey'])}\n\n"
             "To change it, edit the 'hotkey' field in the config file "
             "using pynput GlobalHotKeys syntax, e.g.\n"
             "  cmd+shift+l   ctrl+alt+d   ctrl+shift+x\n\n"

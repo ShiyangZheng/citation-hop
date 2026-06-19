@@ -9,6 +9,7 @@ testable functions.  The rest of the app only ever calls these.
 * :func:`simulate_copy`     — fire a ``Cmd+C`` / ``Ctrl+C`` keystroke
 * :func:`open_path`         — open a file / URL with the OS default app
 * :func:`load_tray_icon`    — return a PIL Image for the tray icon
+* :func:`keystroke_label`   — pretty-print a pynput combo for menus
 
 Design notes
 ------------
@@ -324,6 +325,96 @@ def open_path(path: str | Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Keystroke formatting
+# ---------------------------------------------------------------------------
+
+# pynput Key names -> platform labels.  Keys not in this map are passed
+# through with light prettification (capitalize single chars, friendly
+# names for common special keys).
+_MODS_MAC = {
+    "cmd": "⌘", "cmd_l": "⌘", "cmd_r": "⌘",
+    "ctrl": "⌃", "ctrl_l": "⌃", "ctrl_r": "⌃",
+    "alt": "⌥", "alt_l": "⌥", "alt_r": "⌥", "option": "⌥",
+    "shift": "⇧", "shift_l": "⇧", "shift_r": "⇧",
+}
+
+# Windows uses textual labels (no glyph convention).  Linux mirrors this.
+_MODS_TEXT = {
+    "cmd": "Win", "cmd_l": "Win", "cmd_r": "Win",
+    "ctrl": "Ctrl", "ctrl_l": "Ctrl", "ctrl_r": "Ctrl",
+    "alt": "Alt", "alt_l": "Alt", "alt_r": "Alt", "option": "Alt",
+    "shift": "Shift", "shift_l": "Shift", "shift_r": "Shift",
+}
+
+_PRETTY_KEYS = {
+    "esc": "Esc", "escape": "Esc",
+    "space": "Space", "spacebar": "Space",
+    "tab": "Tab",
+    "enter": "Enter", "return": "Enter",
+    "backspace": "Backspace",
+    "delete": "Del", "del": "Del",
+    "home": "Home", "end": "End",
+    "page_up": "PageUp", "pageup": "PageUp",
+    "page_down": "PageDown", "pagedown": "PageDown",
+    "up": "↑", "down": "↓", "left": "←", "right": "→",
+    "caps_lock": "CapsLock", "capslock": "CapsLock",
+    "num_lock": "NumLock", "numlock": "NumLock",
+    "scroll_lock": "ScrollLock",
+}
+
+
+def keystroke_label(combination: str) -> str:
+    """Render a pynput-style hotkey combo in a platform-readable form.
+
+    Examples (macOS):
+      ``<cmd>+<shift>+d``   →  ``⌘⇧D``
+      ``<ctrl>+<alt>+<f5>`` →  ``⌃⌥F5``
+
+    Examples (Windows / Linux):
+      ``<cmd>+<shift>+d``   →  ``Ctrl+Shift+D``
+      ``<ctrl>+<alt>+<f5>`` →  ``Ctrl+Alt+F5``
+
+    On macOS modifiers are joined with no separator (Apple Human
+    Interface Guidelines convention).  On Windows / Linux they are
+    joined with ``+``.  Unknown keys pass through with light cleanup
+    (capitalised, ``<f1>`` → ``F1``).  Empty / ``None`` input
+    returns ``""``.
+    """
+    if not combination:
+        return ""
+
+    tokens = [t.strip() for t in combination.split("+") if t.strip()]
+    if not tokens:
+        return ""
+
+    if IS_DARWIN:
+        mods = _MODS_MAC
+        sep = ""
+    else:
+        mods = _MODS_TEXT
+        sep = "+"
+
+    out: list[str] = []
+    for tok in tokens:
+        name = tok.strip("<>").strip().lower()
+        if not name:
+            continue
+        if name in mods:
+            out.append(mods[name])
+            continue
+        if name in _PRETTY_KEYS:
+            out.append(_PRETTY_KEYS[name])
+            continue
+        # Single character: uppercase.  Function keys: capitalise ("f1" -> "F1").
+        if len(name) == 1:
+            out.append(name.upper())
+        else:
+            out.append(name.upper() if name.startswith("f") and name[1:].isdigit()
+                       else name.capitalize())
+    return sep.join(out)
+
+
+# ---------------------------------------------------------------------------
 # Misc
 # ---------------------------------------------------------------------------
 
@@ -339,6 +430,7 @@ __all__ = [
     "copy_to_clipboard",
     "open_path",
     "load_tray_icon",
+    "keystroke_label",
     "get_package_dir",
     "get_assets_dir",
 ]
