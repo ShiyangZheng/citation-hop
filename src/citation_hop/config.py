@@ -25,9 +25,12 @@ from .engines import (
     engines_from_dicts,
     engines_to_dicts,
 )
+from .platform_utils import IS_DARWIN, IS_WIN
 
 APP_NAME = "citationHop"
-DEFAULT_HOTKEY = "cmd+shift+l"  # pynput GlobalHotKeys syntax
+# pynput GlobalHotKeys syntax.  Use the OS-native modifier: macOS = cmd,
+# Windows / Linux = ctrl.  The bare combo is the same on all platforms.
+DEFAULT_HOTKEY = "cmd+shift+l" if IS_DARWIN else "ctrl+shift+l"
 DEFAULT_MAILTO = "syz@shiyangzheng.top"
 DEFAULT_THRESHOLD = 0.85
 
@@ -120,6 +123,18 @@ def load_config() -> Dict[str, Any]:
             continue  # handled below
         if k in merged:
             merged[k] = v
+
+    # Normalise a stale hotkey for the current platform: a macOS-style
+    # "cmd+..." combo crashes pynput on Windows / Linux.  Only swap when
+    # "cmd" is not actually a valid key on this platform — on macOS we
+    # leave it alone.
+    if not IS_DARWIN and isinstance(merged.get("hotkey"), str):
+        hk = merged["hotkey"].strip().lower()
+        # "cmd" may appear as a bare token, e.g. "cmd+shift+l" or with
+        # spaces / aliases like "<cmd>+<shift>+l".  Replace the token
+        # only, leave everything else intact.
+        import re
+        merged["hotkey"] = re.sub(r"\bcmd\b", "ctrl", hk)
 
     # Reconcile engine list: keep the user's engines (in their order)
     # but append any default engines that aren't present, so newly-
