@@ -19,6 +19,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pynput 1.8+ opens an X11 connection to validate hotkey key
+      # codes on Linux.  GitHub-hosted Ubuntu runners have no DISPLAY,
+      # so we install Xvfb and run pytest inside `xvfb-run -a`.  macOS
+      # and Windows runners don't need this — pynput uses Cocoa /
+      # Win32 hooks on those platforms.
+      - name: Install Xvfb (ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -34,4 +43,9 @@ jobs:
         run: python scripts/smoke_test.py
 
       - name: Full pytest suite
-        run: python -m pytest -v --tb=short
+        run: |
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            xvfb-run -a python -m pytest -v --tb=short
+          else
+            python -m pytest -v --tb=short
+          fi

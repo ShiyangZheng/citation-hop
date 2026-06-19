@@ -61,20 +61,26 @@ _BARE_MODIFIER_RE = re.compile(
     re.IGNORECASE,
 )
 _BARE_CMD_RE = re.compile(r"(?<!<)\bcmd\b(?!>)", re.IGNORECASE)
+_BRACKETED_CMD_RE = re.compile(r"<cmd>", re.IGNORECASE)
 
 
 def _normalise_hotkey(s: str) -> str:
     """Return ``s`` rewritten into a pynput 1.8+ parseable form.
 
-    Public-ish for testability.  Two passes:
+    Public-ish for testability.  Three passes:
 
     1. ``cmd`` → ``ctrl`` on non-Darwin (catches the bare-token case
        before the bracket pass).
-    2. Wrap any remaining bare modifier tokens in ``<...>``.
+    2. ``<cmd>`` → ``<ctrl>`` on non-Darwin (the bracketed form of the
+       same legacy migration).  Without this, a user with a macOS-style
+       ``<cmd>+<shift>+l`` in their config can't actually press the
+       combo on Windows / Linux — there's no Cmd key there.
+    3. Wrap any remaining bare modifier tokens in ``<...>``.
     """
     out = s.strip()
     if not IS_DARWIN:
         out = _BARE_CMD_RE.sub("ctrl", out)
+        out = _BRACKETED_CMD_RE.sub("<ctrl>", out)
     out = _BARE_MODIFIER_RE.sub(r"<\1>", out)
     return out
 
