@@ -1,8 +1,18 @@
-rumps>=0.4.0
+# Core
 pynput>=1.7.7
 pyperclip>=1.8.2
 requests>=2.31.0
-pyobjc-framework-Cocoa>=10.0
+
+# Cross-platform tray + icon
+pystray>=0.19.5
+Pillow>=10.0.0
+# pystray on macOS uses rumps as its backend; on Windows / Linux it
+# uses native APIs.  This marker keeps it a no-op on other platforms.
+rumps>=0.4.0 ; sys_platform == "darwin"
+
+# Cross-platform config dir, notifications
+platformdirs>=4.0
+plyer>=2.1
 
 # Dev / test
 pytest>=8.0

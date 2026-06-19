@@ -1,8 +1,8 @@
-"""Allow ``python -m citation_hop`` to launch the menu-bar app."""
+"""Allow ``python -m citation_hop`` to launch the tray app."""
 
 import sys
 
-from .app import main
+from .tray import main
 
 if __name__ == "__main__":
     sys.exit(main())

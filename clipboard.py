@@ -1,61 +1,47 @@
 """Safe clipboard access for the hotkey flow.
 
-The hotkey needs to capture the user's current text selection. We do this
-by:
+The hotkey needs to capture the user's current text selection. We do
+this by:
 
     1. snapshotting the current clipboard contents
-    2. simulating Cmd+C
+    2. simulating Cmd+C (macOS) or Ctrl+C (Windows / Linux)
     3. waiting briefly for the target app to put the new selection in
     4. reading the clipboard
     5. restoring the original contents
 
-This keeps the user's clipboard clean — we never leave our lookup result
-there unless we explicitly want to (we DO copy the resolved DOI back
-once the lookup succeeds; that's the documented user-visible side effect).
+This keeps the user's clipboard clean — we never leave our lookup
+result there unless we explicitly want to (we DO copy the resolved
+DOI back once the lookup succeeds; that's the documented user-visible
+side effect).
+
+The macOS-specific AppleScript fallback for sandboxed apps lives
+here too — it's only relevant on macOS, and only used when the
+synthetic ``Cmd+C`` produced an empty clipboard.
 """
 
 from __future__ import annotations
 
 import logging
-import platform
 import subprocess
 import time
-from typing import Optional
 
 import pyperclip
 
-# pynput is macOS-specific in this module; on other platforms we
-# fall back to whatever pyperclip can give us.
-if platform.system() == "Darwin":
-    try:
-        from pynput.keyboard import Controller, Key  # type: ignore
-    except Exception:  # pragma: no cover - import only fails on non-mac
-        Controller = None
-        Key = None
-else:
-    Controller = None
-    Key = None
+from .platform_utils import (
+    IS_DARWIN,
+    simulate_copy,
+)
 
 LOG = logging.getLogger(__name__)
 
 _COPY_DELAY_S = 0.12
 
 
-def _simulate_copy_pynput() -> None:
-    if Controller is None or Key is None:
-        return
-    kb = Controller()
-    kb.press(Key.cmd)
-    kb.press("c")
-    kb.release("c")
-    kb.release(Key.cmd)
-
-
 def _simulate_copy_applescript() -> None:
-    """Last-ditch fallback for apps that ignore synthetic Cmd+C events.
-
-    Requires Automation → System Events permission on macOS.
-    """
+    """Last-ditch fallback for apps that ignore synthetic Cmd+C events
+    on macOS.  Requires Automation → System Events permission."""
+    if not IS_DARWIN:
+        return
     script = (
         'tell application "System Events" to keystroke "c" using command down'
     )
@@ -73,27 +59,41 @@ def get_selection() -> str:
     """Return the currently selected text, leaving the clipboard clean.
 
     On non-macOS platforms (or when permissions are missing), this
-    simply returns whatever is on the clipboard.
+    simply returns whatever ends up on the clipboard after the copy.
     """
-    original = pyperclip.paste()
     try:
-        pyperclip.copy("")  # clear so we can detect "nothing was selected"
-        _simulate_copy_pynput()
-        time.sleep(_COPY_DELAY_S)
-        selected = pyperclip.paste()
+        original = pyperclip.paste()
+    except Exception:  # pragma: no cover
+        original = ""
 
-        # If pynput didn't deliver (some sandboxed apps), try AppleScript.
-        if not selected:
+    try:
+        try:
+            pyperclip.copy("")  # clear so we can detect "nothing was selected"
+        except Exception:  # pragma: no cover
+            pass
+
+        simulate_copy()
+        time.sleep(_COPY_DELAY_S)
+        selected = ""
+        try:
+            selected = pyperclip.paste() or ""
+        except Exception:  # pragma: no cover
+            selected = ""
+
+        # macOS-only AppleScript fallback for sandboxed apps.
+        if not selected and IS_DARWIN:
             _simulate_copy_applescript()
             time.sleep(_COPY_DELAY_S)
-            selected = pyperclip.paste()
+            try:
+                selected = pyperclip.paste() or ""
+            except Exception:  # pragma: no cover
+                selected = ""
 
         return selected
     finally:
-        # Always restore what was on the clipboard before we started.
         try:
             pyperclip.copy(original)
-        except Exception:  # pragma: no cover - clipboard can fail
+        except Exception:  # pragma: no cover
             LOG.debug("Failed to restore original clipboard contents")
 
 
