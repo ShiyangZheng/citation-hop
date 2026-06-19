@@ -121,6 +121,128 @@ def test_keystroke_label_no_brackets_treated_as_raw_key():
 
 def test_required_exports_present():
     """Every function the smoke test looks up must be importable."""
-    for name in ("confirm", "notify", "keystroke_label"):
+    for name in ("confirm", "notify", "keystroke_label", "simulate_copy"):
         assert hasattr(platform_utils, name), f"missing {name}"
         assert callable(getattr(platform_utils, name))
+
+
+# ---------------------------------------------------------------------------
+# simulate_copy
+# ---------------------------------------------------------------------------
+#
+# v1.1.1: simulate_copy on macOS was switched from pynput Controller to
+# AppleScript (``osascript -e 'tell application "System Events" to
+# keystroke "c" using command down'``).  The reason: pynput's
+# Controller posts a synthetic CGEvent via CGEventPost, and if called
+# from inside pynput's listener CFRunLoop, macOS 15 / Apple Silicon
+# re-enters the HID event tap and the process dies with SIGILL.
+#
+# These tests pin the dispatch behaviour so a future refactor can't
+# silently reintroduce the crash.
+
+def test_simulate_copy_dispatches_to_applescript_on_macos(monkeypatch):
+    """On macOS, simulate_copy must call AppleScript, never pynput
+    Controller.  Mock subprocess.run and assert it was invoked with
+    the expected osascript payload."""
+    if not platform_utils.IS_DARWIN:
+        pytest.skip("macOS-only behaviour")
+
+    calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        # Return a fake CompletedProcess; simulate_copy only inspects
+        # returncode / doesn't care about stdout.
+        import subprocess
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    monkeypatch.setattr(platform_utils.subprocess, "run", fake_run)
+
+    # Guard: if anyone reintroduces pynput Controller, this will fire.
+    controller_called = []
+
+    class _FakeController:
+        def __init__(self):
+            controller_called.append("ctor")
+        def press(self, *_a, **_kw):
+            controller_called.append("press")
+        def release(self, *_a, **_kw):
+            controller_called.append("release")
+
+    import pynput.keyboard as _kb
+    monkeypatch.setattr(_kb, "Controller", _FakeController)
+
+    platform_utils.simulate_copy()
+
+    assert controller_called == [], (
+        "pynput Controller must NOT be used on macOS — it re-enters "
+        "the HID event tap and crashes with SIGILL."
+    )
+    assert any("osascript" in c[0] for c in calls), (
+        f"expected an osascript invocation; got {calls!r}"
+    )
+    apple = next(c for c in calls if "osascript" in c[0])
+    script = apple[-1]  # the osascript -e <script> payload
+    assert 'keystroke "c"' in script
+    assert "command down" in script
+
+
+def test_simulate_copy_dispatches_to_pynput_controller_on_win_linux(monkeypatch):
+    """On Windows / Linux, simulate_copy should still use pynput
+    Controller (SendInput / XTestFakeKeyEvent — no re-entrancy)."""
+    if platform_utils.IS_DARWIN:
+        pytest.skip("non-macOS behaviour")
+
+    class _FakeController:
+        def __init__(self):
+            self.calls = []
+        def press(self, k, *a, **kw):
+            self.calls.append(("press", k))
+        def release(self, k, *a, **kw):
+            self.calls.append(("release", k))
+
+    fc = _FakeController()
+    import pynput.keyboard as _kb
+    monkeypatch.setattr(_kb, "Controller", lambda: fc)
+
+    platform_utils.simulate_copy()
+
+    # The four expected calls: press ctrl, press c, release c, release ctrl.
+    ops = [c[0] for c in fc.calls]
+    assert ops == ["press", "press", "release", "release"]
+    # Modifier is Key.ctrl on non-macOS.
+    from pynput.keyboard import Key
+    assert fc.calls[0][1] == Key.ctrl
+    assert fc.calls[1][1] == "c"
+
+
+def test_simulate_copy_handles_missing_pynput_gracefully(monkeypatch):
+    """If pynput.keyboard import blows up on a non-macOS host (rare,
+    but possible on stripped CI images), simulate_copy should be a
+    silent no-op, not raise."""
+    if platform_utils.IS_DARWIN:
+        pytest.skip("non-macOS behaviour")
+
+    import pynput.keyboard as _kb
+
+    def boom():
+        raise ImportError("pynput not available")
+
+    monkeypatch.setattr(_kb, "Controller", boom)
+    # Should not raise.
+    platform_utils.simulate_copy()
+
+
+def test_simulate_copy_handles_missing_osascript_gracefully(monkeypatch):
+    """If osascript is missing on a macOS host (it never is in
+    practice, but a future container could ship without it),
+    simulate_copy should be a silent no-op."""
+    if not platform_utils.IS_DARWIN:
+        pytest.skip("macOS-only behaviour")
+
+    def fake_run(*_a, **_kw):
+        raise FileNotFoundError("osascript missing")
+
+    monkeypatch.setattr(platform_utils.subprocess, "run", fake_run)
+    # Should not raise.
+    platform_utils.simulate_copy()

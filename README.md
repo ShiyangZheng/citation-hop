@@ -72,17 +72,49 @@ A blue "C" icon appears in your menu bar / system tray. That's it.
 
 ### macOS one-time permission setup
 
+> **Important — Accessibility permission is required.** `pynput`
+> uses the macOS HID event tap to receive your global hotkey, and
+> that tap only fires if your terminal / launcher app has been
+> granted Accessibility.  Without it, the app starts and the icon
+> appears, but the hotkey does nothing.  v1.1.1 adds a one-time
+> startup check that pops a notification and opens the right
+> Settings pane if it can't get the permission.
+
 The hotkey needs two permissions; macOS will pop up the prompts the
 first time you press the hotkey.
 
 | Permission | Why | Where to grant |
 |---|---|---|
-| **Accessibility** | `pynput` simulates `Cmd+C` to read the current selection | System Settings → Privacy & Security → Accessibility |
-| **Automation → System Events** | Fallback `AppleScript` keystroke for apps that ignore the synthetic `Cmd+C` | System Settings → Privacy & Security → Automation |
+| **Accessibility** | `pynput` uses the macOS HID event tap to receive the global hotkey.  We also use AppleScript (`osascript`) — **not** `pynput` `Controller` — to send the `Cmd+C` that captures your selection, because pynput's `Controller` re-enters the HID event tap and crashes with `SIGILL` (`zsh: illegal hardware instruction`) on macOS 15 / Apple Silicon. | System Settings → Privacy & Security → Accessibility |
+| **Automation → System Events** | The AppleScript `keystroke "c" using command down` for the selection capture.  This is now the **primary** macOS path, not a fallback. | System Settings → Privacy & Security → Automation |
 
 If the Accessibility prompt never shows up, open
 **System Settings → Privacy & Security → Accessibility** manually and
 toggle the entry for the Terminal / Python that ran the app.
+
+#### Troubleshooting: `zsh: illegal hardware instruction` on hotkey press
+
+> **Symptom:** the app launches fine, the icon appears, but pressing
+> the hotkey kills the process with `zsh: illegal hardware
+> instruction` (SIGILL).
+>
+> **Root cause:** pynput's `Controller` posts a synthetic CGEvent
+> via `CGEventPost`.  If that post happens from inside pynput's
+> own CFRunLoop (which is exactly the case inside the hotkey
+> handler), macOS 15 / Apple Silicon re-enters the HID event tap
+> and the process dies with SIGILL.
+>
+> **Mitigation (already in v1.1.1):**
+> 1.  The hotkey handler now dispatches its work to a dedicated
+>     worker thread, so pynput's CFRunLoop returns to its event
+>     loop immediately and never re-enters from a blocking call.
+> 2.  `simulate_copy()` on macOS uses AppleScript (`osascript -e
+>     'tell application "System Events" to keystroke "c" using
+>     command down'`) instead of pynput's `Controller`.  AppleScript
+>     is delivered through WindowServer and does not re-enter.
+> 3.  A SIGILL / SIGSEGV / SIGBUS signal handler logs a clear,
+>     actionable hint to stderr if a native crash still slips
+>     through.
 
 ### Windows one-time setup
 

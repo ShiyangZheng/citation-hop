@@ -14,15 +14,20 @@ result there unless we explicitly want to (we DO copy the resolved
 DOI back once the lookup succeeds; that's the documented user-visible
 side effect).
 
-The macOS-specific AppleScript fallback for sandboxed apps lives
-here too — it's only relevant on macOS, and only used when the
-synthetic ``Cmd+C`` produced an empty clipboard.
+Important macOS note
+--------------------
+``simulate_copy`` (in :mod:`platform_utils`) uses **AppleScript on
+macOS** rather than pynput's ``Controller``.  Pynput's Controller
+posts a synthetic CGEvent from inside the listener's own CFRunLoop,
+which on macOS 15 / Apple Silicon re-enters the HID event tap and
+crashes the process with ``SIGILL`` (the dreaded ``zsh: illegal
+hardware instruction``).  AppleScript's ``keystroke`` is delivered
+through System Events → WindowServer and does not re-enter.
 """
 
 from __future__ import annotations
 
 import logging
-import subprocess
 import time
 
 import pyperclip
@@ -30,6 +35,7 @@ import pyperclip
 from .platform_utils import (
     IS_DARWIN,
     simulate_copy,
+    _simulate_copy_applescript,  # used here as a recovery path on macOS
 )
 
 LOG = logging.getLogger(__name__)
@@ -37,29 +43,17 @@ LOG = logging.getLogger(__name__)
 _COPY_DELAY_S = 0.12
 
 
-def _simulate_copy_applescript() -> None:
-    """Last-ditch fallback for apps that ignore synthetic Cmd+C events
-    on macOS.  Requires Automation → System Events permission."""
-    if not IS_DARWIN:
-        return
-    script = (
-        'tell application "System Events" to keystroke "c" using command down'
-    )
-    try:
-        subprocess.run(
-            ["osascript", "-e", script],
-            check=False,
-            timeout=2,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        LOG.debug("AppleScript fallback failed: %s", e)
-
-
 def get_selection() -> str:
     """Return the currently selected text, leaving the clipboard clean.
 
     On non-macOS platforms (or when permissions are missing), this
     simply returns whatever ends up on the clipboard after the copy.
+
+    On macOS the primary copy path is :func:`platform_utils.simulate_copy`
+    (which now uses AppleScript).  If the first attempt produced an
+    empty clipboard — which can happen for apps that don't respond to
+    System Events' keystroke within ``_COPY_DELAY_S`` — we retry once
+    with a slightly longer wait before giving up.
     """
     try:
         original = pyperclip.paste()
@@ -80,7 +74,12 @@ def get_selection() -> str:
         except Exception:  # pragma: no cover
             selected = ""
 
-        # macOS-only AppleScript fallback for sandboxed apps.
+        # macOS retry: some sandboxed apps (e.g. Electron-based ones)
+        # don't always update the pasteboard on the first synthetic
+        # Cmd+C.  One more attempt with the same path is enough in
+        # practice; if it still fails we just return the empty string
+        # and the hotkey handler surfaces a friendly "Nothing selected"
+        # notification.
         if not selected and IS_DARWIN:
             _simulate_copy_applescript()
             time.sleep(_COPY_DELAY_S)

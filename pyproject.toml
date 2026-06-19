@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "citation-hop"
-version = "1.1.0"
+version = "1.1.1"
 description = "macOS / Windows / Linux menu-bar app: select a citation, press a hotkey, open the paper."
 readme = "README.md"
 license = { text = "MIT" }

@@ -252,21 +252,71 @@ def simulate_copy() -> None:
     """Simulate a copy keystroke (``Cmd+C`` on macOS, ``Ctrl+C`` elsewhere).
 
     Safe to call on any platform: a no-op if the backend can't be
-    loaded.  We deliberately do *not* do an AppleScript fallback
-    outside of macOS — synthetic Ctrl+C is much more reliable on
-    Windows / Linux than its AppleScript equivalent.
+    loaded.
+
+    Platform notes
+    --------------
+    **macOS** — we deliberately route through AppleScript
+    (``osascript -e 'tell application "System Events" to keystroke "c"
+    using command down'``) instead of pynput's ``Controller``.  This
+    matters because pynput's ``Controller`` posts a synthetic CGEvent
+    via ``CGEventPost``, and if we're called from inside a pynput
+    keyboard listener's own CFRunLoop (which is exactly what happens
+    inside the hotkey handler), macOS sees the event as coming from
+    this process's HID event tap.  On macOS 15 / Apple Silicon that
+    re-entrancy triggers a Mach exception (commonly surfaced as
+    ``SIGILL`` / ``zsh: illegal hardware instruction``) when the
+    synthetic Cmd+C re-enters our own event tap.  AppleScript's
+    ``keystroke`` is delivered through a different code path (System
+    Events → WindowServer) and is not subject to the same re-entrancy.
+
+    **Windows / Linux** — pynput's ``Controller`` is the right tool.
+    It uses ``SendInput`` / ``XTestFakeKeyEvent`` respectively, neither
+    of which re-enters the listener.
     """
+    if IS_DARWIN:
+        _simulate_copy_applescript()
+        return
+
     try:
         from pynput.keyboard import Controller, Key  # type: ignore
     except Exception:  # pragma: no cover
         return
 
-    modifier = Key.cmd if IS_DARWIN else Key.ctrl
     kb = Controller()
-    kb.press(modifier)
+    kb.press(Key.ctrl)
     kb.press("c")
     kb.release("c")
-    kb.release(modifier)
+    kb.release(Key.ctrl)
+
+
+def _simulate_copy_applescript() -> None:
+    """Send a synthetic Cmd+C via AppleScript System Events.
+
+    Used on macOS as the primary path (not just a fallback) to avoid
+    the CGEventTap re-entrancy crash described in :func:`simulate_copy`.
+
+    Requires the **Automation → System Events** permission for the
+    calling process (terminal or bundled .app).  On macOS 13+ this is
+    requested automatically the first time ``osascript`` invokes
+    System Events; the user just has to click Allow.  If denied, this
+    is a silent no-op (the ``subprocess.run`` returns non-zero) and
+    the user's selection won't reach the clipboard — the lookup will
+    fall through to an empty / not-citation result with a friendly
+    notification, not a crash.
+    """
+    if not IS_DARWIN:
+        return
+    script = (
+        'tell application "System Events" to keystroke "c" using command down'
+    )
+    try:
+        subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, timeout=2, check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):  # pragma: no cover
+        LOG.debug("AppleScript Cmd+C failed (osascript missing or timed out)")
 
 
 def get_selection_via_copy() -> str:
