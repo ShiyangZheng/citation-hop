@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "citation-hop"
+version = "1.1.0"
+description = "macOS / Windows / Linux menu-bar app: select a citation, press a hotkey, open the paper."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Shiyang Zheng", email = "syz@shiyangzheng.top" }]
+requires-python = ">=3.10"
+keywords = ["doi", "citation", "literature", "menu-bar", "rumps", "pystray", "pynput"]
+
+# Runtime dependencies — mirror requirements.txt.  Keep these in sync.
+dependencies = [
+    "pynput>=1.7.7",
+    "pyperclip>=1.8.2",
+    "requests>=2.31.0",
+    "pystray>=0.19.5",
+    "Pillow>=10.0.0",
+    "platformdirs>=4.0",
+    "plyer>=2.1",
+    # rumps is macOS-only; pip skips it automatically on other platforms
+    'rumps>=0.4.0 ; sys_platform == "darwin"',
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "responses>=0.25",
+]
+test = [
+    "pytest>=8.0",
+    "responses>=0.25",
+]
+
+[project.urls]
+Homepage = "https://github.com/ShiyangZheng/citation-hop"
+Issues = "https://github.com/ShiyangZheng/citation-hop/issues"
+
+[project.scripts]
+citation-hop = "citation_hop.tray:main"
+
+# src-layout: the actual package lives at src/citation_hop/.  This is
+# the modern Python best-practice layout and is what `pip install -e .`
+# expects when there's a setuptools build backend.
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+citation_hop = ["assets/*.png", "assets/*.ico"]
+
+# Pytest config: tell it the source layout, then everything works
+# whether the package is installed or not.
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]

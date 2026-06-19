@@ -37,17 +37,28 @@ No GUI, no dock icon, no friction. A blue "C" pin sits in your menu bar
 
 ## Installation
 
-```bash
-# 1. Create a clean virtualenv
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+The project uses a `src/` layout, so you install it as a real Python
+package (this makes `import citation_hop` work from anywhere, not just
+the project root).
 
-# 2. Install
-pip install -r requirements.txt
+```bash
+# 1. Clone & create a clean virtualenv
+git clone https://github.com/ShiyangZheng/citation-hop
+cd citation-hop
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\Activate.ps1
+
+# 2. Install (editable + dev/test deps)
+pip install -e ".[dev]"
 
 # 3. Run
 python -m citation_hop
 ```
+
+**Windows shortcut:** just run `.\scripts\windows_setup.ps1` from
+PowerShell — it does the same four steps and also runs the smoke test
+and the full pytest suite.  See `TESTING.md` for the full Windows test
+checklist.
 
 A blue "C" icon appears in your menu bar / system tray. That's it.
 
@@ -189,11 +200,18 @@ Use **Open config file** in the tray menu to jump there.
 ## Running the tests
 
 ```bash
-PYTHONPATH=. python -m pytest tests/ -v
+# Headless smoke test (no GUI required, runs anywhere)
+python scripts/smoke_test.py
+
+# Full pytest suite (58 tests, ~0.3 s)
+python -m pytest -v
 ```
 
-58 tests covering engine rendering, default list, URL builders, the
-citation parser / detector / extractor, and the Crossref resolver.
+`smoke_test.py` exercises every cross-platform code path that doesn't
+need a real display.  Run it on every OS before launching the GUI to
+catch import / config / engine-rendering regressions.  The full pytest
+suite adds tests for the citation parser / detector / extractor and the
+Crossref resolver.
 
 ---
 

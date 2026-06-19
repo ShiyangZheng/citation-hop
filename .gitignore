@@ -27,3 +27,8 @@ htmlcov/
 
 # GitHub
 .github/workflows/.DS_Store
+
+# Build artifacts
+*.egg-info/
+build/
+dist/
