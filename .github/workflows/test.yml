@@ -42,10 +42,13 @@ jobs:
       - name: Headless smoke test
         run: python scripts/smoke_test.py
 
-      - name: Full pytest suite
-        run: |
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            xvfb-run -a python -m pytest -v --tb=short
-          else
-            python -m pytest -v --tb=short
-          fi
+      # Ubuntu needs Xvfb because pynput 1.8+ opens an X11 connection
+      # when parsing hotkey key codes.  macOS / Windows use native
+      # Cocoa / Win32 hooks and don't need a virtual display.
+      - name: Full pytest suite (Ubuntu, wrapped in Xvfb)
+        if: matrix.os == 'ubuntu-latest'
+        run: xvfb-run -a python -m pytest -v --tb=short
+
+      - name: Full pytest suite (macOS / Windows)
+        if: matrix.os != 'ubuntu-latest'
+        run: python -m pytest -v --tb=short
