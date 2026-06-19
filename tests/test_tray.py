@@ -155,8 +155,12 @@ def test_signal_handler_writes_hint_and_escalates(monkeypatch):
     """When a fatal signal fires, our handler must write the hint to
     stderr and then escalate to the default disposition (so the
     process still dies — we just add context first)."""
-    # Use SIGUSR1 (always present on POSIX, never raised by the OS)
-    # and craft a fake handler that points at our real one.
+    # Pick any signal number that's present on the current platform.
+    # POSIX has SIGUSR1 (never raised by the OS — perfect sentinel);
+    # Windows doesn't expose SIGUSR1, so fall back to SIGTERM, which
+    # is universal.  The handler doesn't care which signal — the
+    # test invokes it directly rather than delivering the signal.
+    sentinel = getattr(signal, "SIGUSR1", None) or signal.SIGTERM
     from citation_hop import tray as _t
 
     captured = []
@@ -164,7 +168,7 @@ def test_signal_handler_writes_hint_and_escalates(monkeypatch):
     monkeypatch.setattr(sys, "stderr", MagicMock(write=lambda s: captured.append(s)))
 
     handler = _t._make_signal_handler(
-        signal.SIGUSR1,
+        sentinel,
         "synthetic hint for the test",
     )
     # We don't want to actually kill the test runner; patch os.kill
@@ -174,12 +178,12 @@ def test_signal_handler_writes_hint_and_escalates(monkeypatch):
     monkeypatch.setattr(_t.os, "kill", lambda pid, sig: killed.append(sig))
     monkeypatch.setattr(_t.signal, "signal", lambda s, h: rearmed.append(s))
 
-    handler(signal.SIGUSR1, None)
+    handler(sentinel, None)
 
     assert any("synthetic hint" in s for s in captured), (
         f"expected hint in stderr; got {captured!r}"
     )
-    assert killed == [signal.SIGUSR1], (
+    assert killed == [sentinel], (
         f"expected escalation via os.kill; got {killed!r}"
     )
     # The handler must restore default disposition.
