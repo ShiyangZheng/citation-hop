@@ -63,8 +63,23 @@ import threading
 import time
 import webbrowser
 
-import pystray
-from pystray import MenuItem as Item, Menu
+# pystray pulls in a native UI backend at import time.  On macOS that's
+# AppKit (fine), on Windows it's Win32 (fine), but on Linux it tries to
+# open an X11 display via python-xlib.  CI runners and headless servers
+# have no DISPLAY, so pystray's import raises DisplayNameError and
+# breaks `from citation_hop import tray` — including pytest collection
+# of tests/test_tray.py.  Degrade gracefully: keep the symbols defined
+# (as None) so the rest of this module compiles, and expose
+# _PYSTRAY_AVAILABLE so tests / callers can branch on it.
+try:
+    import pystray
+    from pystray import MenuItem as Item, Menu
+    _PYSTRAY_AVAILABLE = True
+except Exception:  # noqa: BLE001 — backend init can raise many flavours
+    pystray = None  # type: ignore[assignment]
+    Item = None  # type: ignore[assignment]
+    Menu = None  # type: ignore[assignment]
+    _PYSTRAY_AVAILABLE = False
 
 from . import __version__
 from .clipboard import copy_to_clipboard, get_selection
@@ -206,8 +221,10 @@ def _check_trust_and_warn(listener) -> None:
             notify(
                 _app_title(),
                 "Accessibility permission required",
-                "Open System Settings → Privacy & Security → Accessibility, "
-                "grant access, then restart citationHop.",
+                subtitle=(
+                    "Open System Settings → Privacy & Security → Accessibility, "
+                    "grant access, then restart citationHop."
+                ),
             )
 
 
@@ -433,11 +450,11 @@ class CitationHopTray:
 
             if status == "empty":
                 notify(_app_title(), "Nothing selected",
-                       "Select some text first, then press the hotkey.")
+                       subtitle="Select some text first, then press the hotkey.")
                 return
             if status == "not_citation":
                 notify(_app_title(), "Doesn't look like a citation",
-                       "Try selecting a full reference entry.")
+                       subtitle="Try selecting a full reference entry.")
                 return
 
             url = result["url"]
