@@ -23,7 +23,7 @@ return value back to ``True`` (see
 ``tests/test_lookup.py::test_zotero_bypass_routes_to_scholar`` for
 an example).
 
-We patch both:
+We patch BOTH:
 * ``citation_hop.platform_utils.is_zotero_installed``  (the canonical home)
 * ``citation_hop.main.is_zotero_installed``           (the imported alias)
 
@@ -32,6 +32,10 @@ is_zotero_installed`` at module load, so the ``main`` module's
 binding to the function is fixed.  Patching only the canonical
 home leaves ``main.is_zotero_installed`` pointing at the real
 function — which still returns True on the dev's Mac.
+
+We also patch ``lookup_zotero_item_by_doi`` (added in v1.3.0)
+to return ``None`` so the new Zotero ``zotero://select`` deep-link
+fallback never fires in tests unless explicitly opted in.
 """
 
 from __future__ import annotations
@@ -41,7 +45,8 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_zotero_bypass(monkeypatch):
-    """Default every test to "Zotero not installed".
+    """Default every test to "Zotero not installed" and "DOI not in
+    Zotero library".
 
     Individual tests that want the bypass active should re-patch
     inside the test body:
@@ -57,5 +62,17 @@ def _no_zotero_bypass(monkeypatch):
     )
     monkeypatch.setattr(
         "citation_hop.main.is_zotero_installed", lambda: False
+    )
+    # v1.3.0: also neutralise the new ``zotero://select`` deep-link
+    # fallback.  On the dev's Mac the DOI *is* in the Zotero library
+    # (because the developer has been adding papers while developing),
+    # so the deep-link fires and overrides the expected Scholar URL.
+    monkeypatch.setattr(
+        "citation_hop.platform_utils.lookup_zotero_item_by_doi",
+        lambda doi: None,
+    )
+    monkeypatch.setattr(
+        "citation_hop.main.lookup_zotero_item_by_doi",
+        lambda doi: None,
     )
     yield

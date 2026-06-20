@@ -363,10 +363,20 @@ def test_zotero_bypass_routes_to_scholar(monkeypatch):
     doi.org.  This is the v1.2.4 fix for "every selection opens the
     same PDF" — Zotero's interception of doi.org URLs would otherwise
     redirect the user to whatever PDF is currently open in Zotero.
+
+    v1.3.0 added the ``zotero://select`` deep-link as layer 1 and
+    ``resolve_publisher_url`` as layer 2 of the bypass; both must
+    be neutralised here so the test exercises the original
+    layer-3 Scholar fallback path.
     """
     from citation_hop import main as main_mod
     monkeypatch.setattr(main_mod, "is_zotero_installed", lambda: True)
     monkeypatch.setattr("citation_hop.platform_utils.is_zotero_installed", lambda: True)
+    # v1.3.0 layers that fire before the Scholar fallback:
+    monkeypatch.setattr(main_mod, "lookup_zotero_item_by_doi", lambda doi: None)
+    monkeypatch.setattr("citation_hop.platform_utils.lookup_zotero_item_by_doi", lambda doi: None)
+    monkeypatch.setattr(main_mod, "resolve_publisher_url", lambda doi, timeout=4.0: None)
+    monkeypatch.setattr("citation_hop.platform_utils.resolve_publisher_url", lambda doi, timeout=4.0: None)
 
     r = lookup(APA, engines=_eng(), route_mode="auto")
     assert r["status"] == "search", (
@@ -400,6 +410,10 @@ def test_zotero_bypass_preserves_doi(monkeypatch):
     from citation_hop import main as main_mod
     monkeypatch.setattr(main_mod, "is_zotero_installed", lambda: True)
     monkeypatch.setattr("citation_hop.platform_utils.is_zotero_installed", lambda: True)
+    monkeypatch.setattr(main_mod, "lookup_zotero_item_by_doi", lambda doi: None)
+    monkeypatch.setattr("citation_hop.platform_utils.lookup_zotero_item_by_doi", lambda doi: None)
+    monkeypatch.setattr(main_mod, "resolve_publisher_url", lambda doi, timeout=4.0: None)
+    monkeypatch.setattr("citation_hop.platform_utils.resolve_publisher_url", lambda doi, timeout=4.0: None)
 
     r = lookup(APA, engines=_eng(), route_mode="auto")
     assert r["doi"] == "10.1038/nature12373"
