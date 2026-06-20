@@ -33,6 +33,38 @@ No GUI, no dock icon, no friction. A blue "C" pin sits in your menu bar
 
 ---
 
+## 🆕 What's new in v1.3 — Zotero integration overhaul
+
+If you live in Zotero (and who reading this doesn't?), v1.3 makes
+citationHop finally behave the way you'd expect:
+
+* **🔗 Zotero deep-link** — when the DOI you selected exists in your
+  local Zotero library, citationHop opens it directly inside Zotero
+  via `zotero://select/library/items/<KEY>`. Zotero brings the right
+  item to the front in its own reader pane — **the browser is never
+  involved**, so Zotero's connector can't intercept anything. This
+  fixes the long-standing *"every selection opens whatever PDF is
+  currently in Zotero"* bug once and for all.
+* **🌐 Publisher-direct URL fallback** — when the DOI is *not* in
+  your library, we follow `doi.org/{doi}` server-side and hand the
+  publisher URL (`tandfonline.com/doi/full/...`,
+  `academic.oup.com/applij/...`, etc.) to the browser. Many Zotero
+  Safari-connector configs only intercept `doi.org` URLs, so this
+  usually works. `chooser.crossref.org` and other intermediary
+  landing pages are filtered out automatically.
+* **🎯 Multi-signal Crossref scoring** — references that don't carry
+  an explicit DOI now score Crossref candidates using **title**,
+  **author**, **container-title**, **page range**, and **year**
+  signals. This correctly disambiguates cases like Sinclair
+  (vol. 1) vs. Sinclair (vol. 2), where two chapters share the
+  exact same title and author but live in different volumes.
+* **🧹 Cleaner Zotero annotation handling** — Zotero's PDF reader
+  appends noise like `2 📊. https://doi.org/...` to the clipboard
+  on copy. v1.3 strips this before feeding the text to Scholar, so
+  the search query stays focused on the actual citation.
+
+---
+
 ## 🌍 Cross-platform — truly, not "cross-platform on paper"
 
 `citationHop` was built from day one as a **single Python codebase that
@@ -60,6 +92,10 @@ Electron wrapper, no web view, no per-OS fork — just one
 * **🌍 Fully cross-platform.** macOS menu bar, Windows system tray,
   Linux status notifier — one codebase, three native UIs. **CI tested
   on 9 OS × Python combinations** (3 OSes × Python 3.11/3.12/3.13).
+* **🆕 First-class Zotero integration (v1.3).** Opens items directly
+  inside Zotero via the `zotero://select` URL scheme. Falls back to
+  publisher URLs (bypassing the Zotero connector's `doi.org`
+  interception) when the item isn't in your library.
 * **Customisable search engines.** Ships with 15 mainstream platforms
   (Crossref, doi.org, Google Scholar, Semantic Scholar, OpenAlex,
   arXiv, PubMed, DBLP, BASE, Connected Papers, Litmaps, ResearchGate,
@@ -68,6 +104,8 @@ Electron wrapper, no web view, no per-OS fork — just one
   own URL template.
 * **Three-stage pipeline.** DOI resolution → DOI URL → fallback
   search engine. Each stage is engine-driven and configurable.
+* **Multi-signal Crossref scoring (v1.3).** Title + author +
+  container + page + year, instead of just title similarity.
 
 ---
 
@@ -171,6 +209,67 @@ To change the hotkey, click the tray icon → **Hotkey** → **Change hotkey…*
 → confirm to open the config file.  Edit the `hotkey` field with
 `pynput` syntax (e.g. `cmd+alt+d`, `ctrl+shift+x`) and save.
 
+### In-text citations
+
+citationHop also recognises short in-text citations like
+`(Heidari, 2025)`, `Smith et al. (2020)`, `(Smith & Jones, 2020)`,
+and `(Smith, 2020a)`.  When the selection matches one of these
+patterns, citationHop **skips Crossref** (an 8–40 character author-year
+string is mostly noise to bibliographic search) and routes the parsed
+**author + year** straight to your search engine.  This is both faster
+(~50 ms vs ~1–2 s for the Crossref round-trip) and more accurate
+(Scholar indexes the full text, so it can usually disambiguate
+authors + years better than a Crossref keyword query).
+
+Supported shapes:
+
+```
+(Smith, 2020)           →  Scholar: q=Smith+2020
+(Smith & Jones, 2020)   →  Scholar: q=Smith+%26+Jones+2020
+(Smith et al., 2020)    →  Scholar: q=Smith+et+al.+2020
+Smith et al. (2020)     →  Scholar: q=Smith+et+al.+2020
+(Smith, 2020a)          →  Scholar: q=Smith+2020a   (APA disambig)
+```
+
+If the parsed author+year is ambiguous (e.g. "Smith 2020" matches
+hundreds of papers), Scholar will usually still find the right one
+because of its full-text relevance ranking.
+
+### Routing modes
+
+By default, in-text citations go to a search engine and full
+references go to the DOI URL. If you have the Zotero browser
+connector or Zotero's "Open in Zotero" enabled, the doi.org URL
+gets intercepted and the browser re-opens whatever PDF is currently
+selected in Zotero — so the browser always shows the same paper
+regardless of which citation you actually selected.
+
+To work around this, open the tray menu → **Routing** and pick one of:
+
+| Mode | In-text citation | Full reference |
+|---|---|---|
+| **Auto** (default) | Search engine | Zotero select / publisher / Scholar DOI |
+| **Always search** | Search engine | Search engine ← recommended if Zotero intercepts doi.org |
+| **Always DOI** | DOI URL | DOI URL |
+
+The mode is persisted in `route_mode` in your config file.
+
+### Zotero behaviour (v1.3+)
+
+When Zotero is installed and `route_mode = auto` (the default), v1.3+
+picks the destination using a five-layer fallback. The browser only
+enters the picture at layers 2–5:
+
+| Priority | Destination | What the user sees |
+|---|---|---|
+| 1. **Zotero item** | `zotero://select/library/items/<KEY>` | Zotero itself brings the right item to the front. |
+| 2. **Publisher URL** | `tandfonline.com/doi/full/...` (resolved server-side via `doi.org`) | Browser opens the publisher's page directly, bypassing the Zotero connector. |
+| 3. **Scholar by DOI** | `scholar.google.com/scholar?q=<DOI>` | Scholar resolves the DOI to the exact paper. |
+| 4. **Scholar by text** | `scholar.google.com/scholar?q=<cleaned citation>` | Last-resort text search with Zotero's PDF-reader noise (`2 📊. https://doi.org/...`) stripped. |
+
+If you're not on a Mac (or don't have Zotero installed), the lookup
+goes straight through your configured DOI / search engines as in v1.2.
+
 ---
 
 ## Supported input formats
@@ -181,7 +280,8 @@ To change the hotkey, click the tray icon → **Hotkey** → **Change hotkey…*
 | `https://doi.org/...` URL | regex on the URL |
 | BibTeX (`@article{...}`) | `doi = {…}` field |
 | RIS (`TY  - JOUR` …) | `DO  - …` field |
-| APA / MLA / Chicago (no DOI) | Crossref bibliographic search, with title-similarity threshold (default 0.85) |
+| APA / MLA / Chicago (no DOI) | Crossref bibliographic search, with title-similarity threshold (default 0.85). The title is now auto-extracted from APA references (`Authors. (Year). TITLE. Journal...`) so the Scholar fallback search is unique per reference. |
+| In-text citation (`(Smith, 2020)`) | Short-circuits to the search engine with parsed author + year — no Crossref call |
 | Nothing matched | User-configured search engine (Google Scholar by default) |
 
 ---

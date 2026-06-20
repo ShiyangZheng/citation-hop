@@ -42,6 +42,20 @@ _RIS_FIELD_RE = re.compile(
 _YEAR_PAREN_RE = re.compile(r"\(((?:19|20)\d{2})[a-z]?\)")
 _YEAR_BARE_RE = re.compile(r"\b((?:19|20)\d{2})\b")
 
+# APA reference shape: "Authors. (YYYY). Title. Journal, vol(issue), pages."
+# We isolate the title as the segment between the year-paren and the
+# next ". " followed by a capitalised word (which is almost always the
+# start of the journal / container title).  This is what makes the
+# Scholar fallback URL meaningful: with title=None, the URL reduces to
+# "author + year", which often returns the wrong paper on Scholar.
+_APA_TITLE_AFTER_YEAR_RE = re.compile(
+    # ". (YYYY). " opening
+    r"\.\s*\((?:19|20)\d{2}[a-z]?\)\.\s*"
+    r"(?P<title>.+?)"                          # title (lazy)
+    # terminator: ". " followed by a capitalised word, or end of string
+    r"(?:\.\s+(?=[A-Z])|$)"
+)
+
 
 def _parse_bibtex(text: str) -> dict:
     fields: dict = {
@@ -123,8 +137,21 @@ def _parse_plain(text: str) -> dict:
     if head and len(head) <= 200:
         fields["author"] = head
 
-    # Title — for plain text we just send the whole string to Crossref as
-    # the bibliographic query. We do not try to isolate the title here.
+    # Title — try to isolate the APA title segment ("Authors. (Year).
+    # TITLE. Journal...").  Without this, the Scholar fallback URL is
+    # only `?q=author+year`, which often maps to the wrong paper on
+    # Scholar — the user perceives it as "the tool always opens the
+    # same paper".  We only attempt this for the APA shape (year
+    # wrapped in parens); MLA / Chicago don't follow the same template.
+    m = _APA_TITLE_AFTER_YEAR_RE.search(text)
+    if m:
+        title = m.group("title").strip().rstrip(",")
+        # The lazy match may swallow a trailing ". " if the title ends
+        # at end-of-string without a following capitalised word.  Trim.
+        title = title.rstrip(".").strip()
+        if title and len(title) <= 400:
+            fields["title"] = title
+
     return fields
 
 

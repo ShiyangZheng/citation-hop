@@ -2,7 +2,12 @@
 
 import pytest
 
-from citation_hop.detector import detect_format, is_likely_citation
+from citation_hop.detector import (
+    detect_format,
+    detect_in_text_citation,
+    is_in_text_citation,
+    is_likely_citation,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -81,3 +86,67 @@ def test_bibtex_passes_gate():
 
 def test_ris_passes_gate():
     assert is_likely_citation(RIS)
+
+
+def test_sinclair_1987_passes_gate():
+    """Regression: ``Sinclair, John McH.`` (multi-letter given name, no
+    period after "McH") used to fail the heuristic gate because the
+    surname-initial regex required a trailing "." after a single capital
+    letter.  The relaxed regex must accept this real-world APA reference.
+    """
+    text = (
+        "Sinclair, John McH. 'Collocation: A Progress Report'. In "
+        "Language Topics: Essays in Honor of Michael Halliday, vol. 2. 1987."
+    )
+    assert is_likely_citation(text)
+    assert detect_format(text) == "plain"
+
+
+# ---------------------------------------------------------------------------
+# In-text citation detector
+# ---------------------------------------------------------------------------
+#
+# In-text citations are SHORT (8-50 chars typically) and have a clear
+# author + year shape.  They fail the full-reference gate (length < 40),
+# so they need their own detector.
+
+
+@pytest.mark.parametrize(
+    "text, want_author, want_year",
+    [
+        ("(Smith, 2020)",             "Smith",             "2020"),
+        ("(Smith & Jones, 2020)",     "Smith & Jones",     "2020"),
+        ("(Smith et al., 2020)",      "Smith et al.",      "2020"),
+        ("(Heidari, 2025)",           "Heidari",           "2025"),
+        ("Smith (2020)",              "Smith",             "2020"),
+        ("Smith et al. (2020)",       "Smith et al.",      "2020"),
+        ("Smith and Jones (2020)",    "Smith & Jones",     "2020"),
+        ("(Smith, 2020a)",            "Smith",             "2020a"),
+        ("(Smith, 2020b)",            "Smith",             "2020b"),
+        ("(Libben & Titone, 2008)",   "Libben & Titone",   "2008"),
+    ],
+)
+def test_detect_in_text_citation_positive(text, want_author, want_year):
+    got = detect_in_text_citation(text)
+    assert got is not None, f"no match for {text!r}"
+    assert got["kind"] == "author_year"
+    assert got["author"] == want_author
+    assert got["year"] == want_year
+    assert is_in_text_citation(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "(2025)",                              # no author
+        "",                                    # empty
+        "The Smith (2020) study",              # trailing prose
+        "Recent work (Smith, 2020) found",     # embedded in prose
+        "(2020)",                              # year only
+        "Smith 2020",                          # missing parens
+        "a" * 200,                             # too long
+    ],
+)
+def test_detect_in_text_citation_negative(text):
+    assert detect_in_text_citation(text) is None
+    assert not is_in_text_citation(text)

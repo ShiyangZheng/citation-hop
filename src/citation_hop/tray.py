@@ -84,11 +84,13 @@ except Exception:  # noqa: BLE001 — backend init can raise many flavours
 from . import __version__
 from .clipboard import copy_to_clipboard, get_selection
 from .config import (
+    VALID_ROUTE_MODES,
     config_path,
     load_config,
     reset_engines,
     set_engine_enabled,
     set_hotkey,
+    set_route_mode,
 )
 from .engines import (
     STAGE_DOI_RESOLVER,
@@ -102,6 +104,8 @@ from .main import lookup
 from .platform_utils import (
     IS_DARWIN,
     confirm,
+    frontmost_app_name,
+    is_zotero_installed,
     keystroke_label,
     load_tray_icon,
     notify,
@@ -266,6 +270,17 @@ class CitationHopTray:
                 ),
             ),
             Item(
+                "Routing",
+                Menu(
+                    *self._route_mode_menu_items(),
+                    Menu.SEPARATOR,
+                    Item(
+                        "Why three modes?",
+                        lambda i, ii: self._on_about_routing(),
+                    ),
+                ),
+            ),
+            Item(
                 "Search engines",
                 Menu(
                     *self._engine_menu_items(),
@@ -279,6 +294,124 @@ class CitationHopTray:
             Item(f"About {_app_title()}", self._on_about),
             Menu.SEPARATOR,
             Item("Quit", self._on_quit),
+        )
+
+    def _route_mode_menu_items(self) -> list:
+        """Build the three radio-style entries for routing mode.
+
+        We don't use pystray's ``radio=True`` because the older pystray
+        versions we support don't render the radio marker on macOS, and
+        we want a single source of truth (``self.cfg["route_mode"]``)
+        rather than a separate ``checked`` callable per item.
+        """
+        current = (self.cfg.get("route_mode") or "auto").lower()
+        items: list = []
+        # If Zotero is installed, the "Auto" description mentions the
+        # auto-bypass so the user knows what "Auto" actually does on
+        # this machine.
+        auto_desc = "In-text → search · Full reference → DOI"
+        if IS_DARWIN and is_zotero_installed() and current == "auto":
+            auto_desc = (
+                "In-text → search · Full reference → Scholar "
+                "(Zotero auto-bypass active)"
+            )
+        for mode, label, desc in (
+            (
+                "auto",
+                "Auto  (default)",
+                auto_desc,
+            ),
+            (
+                "search_always",
+                "Always search",
+                "Everything → Scholar / search engine. Use this if "
+                "Zotero or its browser connector keeps intercepting "
+                "doi.org URLs and showing the same PDF.",
+            ),
+            (
+                "doi_always",
+                "Always DOI",
+                "Everything → doi.org (may be intercepted by Zotero).",
+            ),
+        ):
+            prefix = "\u2713 " if current == mode else "    "
+            items.append(
+                Item(
+                    prefix + label + "  \u2014  " + desc,
+                    self._make_route_mode_handler(mode),
+                )
+            )
+        return items
+
+    def _make_route_mode_handler(self, mode: str):
+        """Return a 2-arg pystray-compatible handler that closes over ``mode``.
+
+        pystray's ``MenuItem._assert_action`` rejects any callable whose
+        ``co_argcount > 2`` (pystray 0.19.x, see ``_base.py:557-561``).
+        A default-arg trick like ``lambda i, ii, m=mode: ...`` would look
+        like 3 args to pystray and crash. We bind ``mode`` via closure
+        instead, so the returned handler is exactly 2-arg.
+        """
+        def handler(icon, item):
+            self._on_set_route_mode(mode)
+        return handler
+
+    def _on_set_route_mode(self, mode: str) -> None:
+        if mode not in VALID_ROUTE_MODES:
+            return
+        old = self.cfg.get("route_mode")
+        if old == mode:
+            return
+        self.cfg = set_route_mode(mode)
+        # Force a re-check of Zotero's running state on the next lookup.
+        # Without this, the user could toggle mode after launching or
+        # quitting Zotero and see a stale bypass behaviour for up to
+        # 60 s (the cache TTL in platform_utils).
+        try:
+            from .platform_utils import refresh_zotero_cache
+            refresh_zotero_cache()
+        except Exception:
+            pass
+        self._refresh_menu()
+        notify(
+            _app_title(),
+            f"Routing: {mode}",
+            subtitle={
+                "auto":          "In-text \u2192 search · Full ref \u2192 DOI",
+                "search_always": "Everything \u2192 Scholar (avoids Zotero DOI interception)",
+                "doi_always":    "Everything \u2192 doi.org",
+            }.get(mode, ""),
+        )
+
+    def _on_about_routing(self) -> None:
+        zotero_note = ""
+        if IS_DARWIN and is_zotero_installed():
+            zotero_note = (
+                "\n\nZotero is installed on this Mac, so \u2018Auto\u2019 "
+                "currently routes full references through Google Scholar "
+                "instead of doi.org (auto-bypass). Switch to \u2018Always "
+                "DOI\u2019 in this menu to force doi.org if you want to "
+                "use Zotero's PDF reader integration."
+            )
+        confirm(
+            "Routing modes",
+            (
+                "Auto (default): in-text citations \u2192 search engine; "
+                "full references \u2192 DOI URL." + zotero_note + "\n\n"
+                "Always search: every selection \u2192 search engine. "
+                "Recommended if you have the Zotero browser connector or "
+                "Zotero's 'Open in Zotero' enabled \u2014 those intercept "
+                "doi.org URLs and re-open the currently-selected Zotero "
+                "item, so the browser always shows the same PDF regardless "
+                "of which citation you actually selected.\n\n"
+                "Always DOI: every selection \u2192 doi.org URL (the "
+                "publisher's page).\n\n"
+                "In-text citations are short (\"Smith, 2020\") so they "
+                "always go to a search engine regardless of mode \u2014 "
+                "that's the only way to find the right paper from an "
+                "author + year alone."
+            ),
+            default=True,
         )
 
     def _engine_menu_items(self) -> list:
@@ -448,9 +581,47 @@ class CitationHopTray:
                 notify(_app_title(), "Selection error", str(e))
                 return
 
+            # Diagnostic log: record what we actually captured so we can
+            # debug "always jumps to the same paper" reports.  Append-only
+            # so a long-running session doesn't grow without bound.
+            try:
+                import json as _json, time as _t
+                with open("/tmp/citation_hop.log", "a", encoding="utf-8") as _f:
+                    _f.write(_json.dumps({
+                        "ts": _t.time(),
+                        "text_preview": (text or "")[:200],
+                        "text_len": len(text or ""),
+                    }) + "\n")
+            except Exception:  # pragma: no cover
+                pass
+
             engines = engines_from_dicts(self.cfg.get("engines") or [])
-            result = lookup(text, engines=engines, mailto=self.cfg.get("mailto"))
+            result = lookup(
+                text,
+                engines=engines,
+                mailto=self.cfg.get("mailto"),
+                route_mode=self.cfg.get("route_mode", "auto"),
+            )
             status = result["status"]
+            bypass_reason = result.get("bypass_reason")
+
+            # Append the lookup *result* to the diagnostic log so we can
+            # see "input X -> resolved URL Y".  This is what proves or
+            # disproves the user's "always opens the same paper" claim.
+            try:
+                import json as _json, time as _t2
+                with open("/tmp/citation_hop.log", "a", encoding="utf-8") as _f:
+                    _f.write(_json.dumps({
+                        "ts": _t2.time(),
+                        "stage": "result",
+                        "status": status,
+                        "doi": result.get("doi"),
+                        "engine_used": result.get("engine_used"),
+                        "url": result.get("url"),
+                        "title": result.get("title"),
+                    }) + "\n")
+            except Exception:  # pragma: no cover
+                pass
 
             if status == "empty":
                 notify(_app_title(), "Nothing selected",
@@ -463,26 +634,139 @@ class CitationHopTray:
 
             url = result["url"]
             engine_used = result.get("engine_used")
+            bypass_reason = result.get("bypass_reason")
+
+            # Log the frontmost app + the decision the lookup pipeline
+            # made (doi vs search, with or without Zotero bypass).  This
+            # is the single most useful line in the log for diagnosing
+            # "every selection opens the same paper" reports — if
+            # frontmost is "Zotero" and the URL is doi.org, you've found
+            # the bug.
+            try:
+                import json as _json, time as _t
+                _front = frontmost_app_name() if IS_DARWIN else ""
+                with open("/tmp/citation_hop.log", "a", encoding="utf-8") as _f:
+                    _f.write(_json.dumps({
+                        "ts": _t.time(),
+                        "stage": "open_pre",
+                        "frontmost": _front,
+                        "zotero_installed": is_zotero_installed() if IS_DARWIN else False,
+                        "bypass_reason": bypass_reason,
+                        "url": url,
+                        "engine_used": engine_used,
+                        "status": status,
+                    }) + "\n")
+            except Exception:  # pragma: no cover
+                pass
 
             if status == "doi" and result["doi"]:
                 copy_to_clipboard(result["doi"])
+                if engine_used == "publisher_direct":
+                    notify(
+                        _app_title(),
+                        "DOI: " + result["doi"],
+                        subtitle="Opening publisher page (Zotero bypassed) \u00b7 DOI copied",
+                    )
+                else:
+                    notify(
+                        _app_title(),
+                        "DOI: " + result["doi"],
+                        subtitle=f"Opening via {engine_used} \u00b7 DOI copied",
+                    )
+            elif status == "in_text":
+                in_text = result.get("in_text") or {}
+                author = in_text.get("author", "")
+                year = in_text.get("year", "")
+                who = " ".join(p for p in (author, year) if p) or text.strip()
                 notify(
                     _app_title(),
-                    "DOI: " + result["doi"],
-                    subtitle=f"Opening via {engine_used} · DOI copied",
+                    f"In-text: {who}  \u2192  search",
+                    subtitle=f"Searching via {engine_used}  \u00b7  {url[:60]}"
+                    + ("\u2026" if len(url) > 60 else ""),
                 )
+            elif bypass_reason:
+                # Zotero auto-bypass. Two sub-cases:
+                # 1. publisher_direct — we resolved the publisher URL
+                #    server-side, user gets the actual paper page.
+                # 2. scholar_zotero_bypass — publisher URL resolution
+                #    failed (e.g. chooser.crossref.org), fell back to
+                #    Scholar search.
+                if engine_used == "publisher_direct":
+                    notify(
+                        _app_title(),
+                        "Opening publisher page (Zotero bypassed)",
+                        subtitle=f"DOI: {result.get('doi', '?')} \u00b7 {url[:50]}"
+                        + ("\u2026" if len(url) > 50 else ""),
+                    )
+                else:
+                    notify(
+                        _app_title(),
+                        "Zotero detected  \u2014  Scholar search",
+                        subtitle=(
+                            "doi.org intercepted by Zotero \u2192 searching "
+                            "Scholar instead. \u2018Always DOI\u2019 to force doi.org."
+                        ),
+                    )
             else:
                 notify(
                     _app_title(),
-                    f"No DOI found — opening {engine_used}",
-                    subtitle=url[:80] + ("…" if len(url) > 80 else ""),
+                    f"No DOI found \u2014 opening {engine_used}",
+                    subtitle=url[:80] + ("\u2026" if len(url) > 80 else ""),
                 )
 
+            # Extra log line so the user can see, in /tmp/citation_hop.log,
+            # the exact URL we're about to hand to the OS.  Critical for
+            # diagnosing "the browser always opens the same paper" — if
+            # the URL is correct but the browser shows a different page,
+            # the bug is in the OS / browser / a third-party app
+            # (Zotero connector, Zotero PDF reader, etc.), not in us.
             try:
-                webbrowser.open(url)
+                import json as _json, time as _t3
+                with open("/tmp/citation_hop.log", "a", encoding="utf-8") as _f:
+                    _f.write(_json.dumps({
+                        "ts": _t3.time(),
+                        "stage": "open",
+                        "url": url,
+                        "engine_used": engine_used,
+                        "status": status,
+                        "route_mode": self.cfg.get("route_mode", "auto"),
+                    }) + "\n")
+            except Exception:  # pragma: no cover
+                pass
+
+            # On macOS, webbrowser.open() defaults to ``new=0`` which, for
+            # some browsers, reuses the frontmost tab.  Force a new tab
+            # AND bring the browser to the front so the user sees the
+            # result rather than a backgrounded tab.  ``new=2`` is the
+            # pystray/Python value for "new tab" on every major browser
+            # (Chrome, Safari, Firefox, Edge).
+            try:
+                opened = webbrowser.open(url, new=2, autoraise=True)
+            except TypeError:
+                # Some Python builds / older stdlib don't accept the
+                # kwargs.  Fall back to positional form.
+                opened = webbrowser.open(url, 2, True)
             except Exception as e:  # noqa: BLE001
                 LOG.exception("Failed to open URL")
                 notify(_app_title(), "Browser error", str(e))
+                return
+            if not opened:
+                # webbrowser.open returns False if the OS couldn't find
+                # a registered browser.  This is a "your default
+                # browser is misconfigured" condition, not a citation
+                # resolution failure — tell the user explicitly.
+                LOG.warning("webbrowser.open returned False for %r", url)
+                notify(
+                    _app_title(),
+                    "No default browser set",
+                    subtitle="Set a default browser in System Settings, "
+                             "then try again. URL copied to clipboard.",
+                )
+                try:
+                    import pyperclip
+                    pyperclip.copy(url)
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception:  # noqa: BLE001
             # Last-ditch: never let a worker-thread exception take down
             # the listener.  Log it; the user might lose one lookup.
@@ -491,9 +775,24 @@ class CitationHopTray:
     # ---- entry point ----------------------------------------------------
 
     def run(self) -> int:
+        import os
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+        # Startup banner — easy to verify a fresh process when
+        # debugging "is it the old tray or the new one?".  Includes
+        # PID, version, and config path.
+        LOG.info(
+            "citationHop %s starting (pid=%d, config=%s)",
+            __version__, os.getpid(), config_path(),
+        )
+        print(
+            f"[citationHop] v{__version__} started · pid={os.getpid()} · "
+            f"hotkey={keystroke_label(self.cfg['hotkey'])} · "
+            f"press Ctrl-C in this terminal to quit",
+            file=sys.stderr,
+            flush=True,
         )
         _install_signal_handlers()
         # Register the hotkey in a background thread *before* the icon
@@ -508,6 +807,34 @@ class CitationHopTray:
             name="citationHop-trust-check",
             daemon=True,
         ).start()
+        # One-time Zotero detection notice on first launch.  Only fires
+        # when Zotero is installed AND the user's current route_mode is
+        # "auto" (the default) — explicit user choices
+        # ("search_always" / "doi_always") are respected without
+        # nagging.  The notice is delayed slightly so the user has time
+        # to see the tray icon appear before the notification pops.
+        if (
+            IS_DARWIN
+            and is_zotero_installed()
+            and (self.cfg.get("route_mode") or "auto").lower() == "auto"
+        ):
+            def _zotero_startup_notice():
+                time.sleep(2.5)
+                notify(
+                    _app_title(),
+                    "Zotero detected  \u2014  routing via Scholar",
+                    subtitle=(
+                        "doi.org URLs are intercepted by Zotero and "
+                        "would show the currently-open PDF. citationHop "
+                        "will use Google Scholar instead. Switch Routing "
+                        "mode to \u2018Always DOI\u2019 in the menu to force doi.org."
+                    ),
+                )
+            threading.Thread(
+                target=_zotero_startup_notice,
+                name="citationHop-zotero-notice",
+                daemon=True,
+            ).start()
         self.icon.run()
         return 0
 

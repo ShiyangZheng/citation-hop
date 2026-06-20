@@ -2,9 +2,11 @@
 and if so, which format it is in.
 
 Public API:
-    Format          = Literal["bibtex", "ris", "plain"]
-    detect_format() -> Format | None
-    is_likely_citation(text) -> bool
+    Format                  = Literal["bibtex", "ris", "plain"]
+    detect_format()         -> Format | None
+    is_likely_citation(text)-> bool
+    detect_in_text_citation()-> dict | None
+    is_in_text_citation()   -> bool
 
 Heuristic gate
 --------------
@@ -14,6 +16,18 @@ candidate only if it (a) is between 40 and 2000 characters, and
 (b) carries at least two of the well-known citation signals
 (publication year, volume(issue), DOI, page/volume keyword, et al.,
 or a Surname, I. author pattern).
+
+In-text citations
+-----------------
+A separate detector recognises the much shorter in-text citation
+patterns — ``(Smith, 2020)``, ``Smith (2020)``, ``(Smith et al., 2020)``,
+``(Smith & Jones, 2020)``, with optional disambig letter
+(``Smith, 2020a``). These are usually 8–40 characters, well below the
+40-character floor of the full-reference gate, so they need their own
+detector.  When matched, the lookup pipeline skips Crossref entirely
+and routes the parsed ``author + year`` straight to the search engines.
+This is both faster and more accurate: Crossref's ``query.bibliographic``
+on a 15-character author-year string is mostly noise.
 """
 
 from __future__ import annotations
@@ -49,9 +63,70 @@ _PAGE_KEYWORDS_RE = re.compile(
     r"\b(?:pp?\.|vol\.|no\.|pages?)\b", re.IGNORECASE
 )
 _ET_AL_RE = re.compile(r"\bet\s+al\.?", re.IGNORECASE)
+# APA surname pattern matches:
+#   "Heidari, A."         — surname, comma, single-letter initial
+#   "Sinclair, John McH." — surname, comma, multi-letter given name + cap
+#   "van der Berg, A."    — particle surname (just leading capital letter)
+# The required suffix after the comma is one or more *capitalised* tokens
+# (with optional spaces).  Each token is either a single letter (initial)
+# or a full word.  End punctuation (period, comma, &) is not required —
+# Heidari's "A." has the period, but "Sinclair, John McH" does not.
 _SURNAME_INITIAL_RE = re.compile(
-    r"\b[A-Z][a-zA-Z\-']{1,},\s*[A-Z]\."
+    r"\b[A-Z][a-zA-Z\-']{1,},\s+"
+    r"(?:[A-Z]\.?(?:\s+[A-Z][a-zA-Z]+)*"
+    r"|[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)"
 )
+
+# --- In-text citation patterns --------------------------------------------
+#
+# Parenthetical:  (Smith, 2020)  (Smith & Jones, 2020)
+#                 (Smith et al., 2020)  (Smith et al., 2020a)
+# Narrative:      Smith (2020)  Smith and Jones (2020)
+#                 Smith et al. (2020)
+#
+# Author body matches:
+#   - single capitalised surname
+#   - surname + (& | and) + capitalised surname
+#   - surname + et al.
+#   - surname + et al. + (& | and) + capitalised surname   (APA 21+ authors)
+# In all cases the author body is followed by either:
+#   - a comma and the year, all wrapped in ( ... )   — parenthetical
+#   - the year wrapped in ( ... )                    — narrative
+
+_IN_TEXT_AUTHOR_BODY = (
+    r"[A-Z][a-zA-Z\-\']+"                                # surname
+    r"(?:"                                               # optional tails:
+    r"\s+(?:&|and)\s+[A-Z][a-zA-Z\-\']+"                 #   & coauthor
+    r"|\s+et\s+al\.?"                                    #   et al.
+    r")?"
+    r"(?:"                                               # more coauthors after et al.
+    r"\s+(?:&|and)\s+[A-Z][a-zA-Z\-\']+"
+    r")*"
+)
+
+_IN_TEXT_PAREN_RE = re.compile(
+    r"^\s*\(\s*"
+    + _IN_TEXT_AUTHOR_BODY +
+    r"\s*,\s*"
+    r"(?P<year>(?:19|20)\d{2})(?P<suffix>[a-z])?"
+    r"\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+_IN_TEXT_NARRATIVE_RE = re.compile(
+    r"^\s*"
+    + _IN_TEXT_AUTHOR_BODY +
+    r"\s*\(\s*"
+    r"(?P<year>(?:19|20)\d{2})(?P<suffix>[a-z])?"
+    r"\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+# Upper bound on in-text citation length: parenthetical form with
+# "Surname et al." + year + suffix is ~32 chars; a worst-case
+# "Surname, A. B., & Surname, C. D." (APA 21+ authors) can hit ~50.
+# We use 80 to leave headroom for non-breaking spaces, etc.
+_IN_TEXT_MAX_LEN = 80
 
 
 def detect_format(text: str) -> Optional[Format]:
@@ -94,3 +169,83 @@ def is_likely_citation(text: str) -> bool:
         )
     )
     return signals >= 2
+
+
+# ---------------------------------------------------------------------------
+# In-text citation detector
+# ---------------------------------------------------------------------------
+
+def detect_in_text_citation(text: str) -> Optional[dict]:
+    """Detect an in-text citation like ``(Smith, 2020)`` or ``Smith et al. (2020)``.
+
+    Returns a dict on hit, ``None`` otherwise::
+
+        {
+            "kind":   "author_year",
+            "author": "Smith",
+            "year":   "2020",      # may include disambig: "2020a"
+        }
+
+    Recognised forms (case-insensitive on the separators):
+
+    * Parenthetical — ``(Author, YYYY[a])``
+    * Narrative     — ``Author (YYYY[a])``
+
+    Author body allows ``&`` / ``and`` and ``et al.`` (with an optional
+    trailing co-author after ``et al.``).  A 4-digit year (1900-2099)
+    is required; the optional ``[a-z]`` suffix handles APA-style
+    same-year disambiguation (``Smith, 2020a``).
+
+    The text must fit within :data:`_IN_TEXT_MAX_LEN` characters
+    (default 80) to avoid catching entire paragraphs that happen to
+    start with a surname.
+    """
+    if not text:
+        return None
+    stripped = text.strip()
+    if not stripped or len(stripped) > _IN_TEXT_MAX_LEN:
+        return None
+
+    m = _IN_TEXT_PAREN_RE.match(stripped) or _IN_TEXT_NARRATIVE_RE.match(stripped)
+    if not m:
+        return None
+
+    year = m.group("year")
+    suffix = m.group("suffix") or ""
+    full = m.group(0).strip()
+    # Locate the year position inside the matched text and slice off
+    # everything after it (and any closing paren).  What remains is the
+    # author body, possibly with a leading "(" or trailing ","/"(".
+    year_idx = full.find(year)
+    author_body = full[:year_idx].rstrip()
+    # Strip the *opening* paren of the year group, which is always the
+    # last character before the year for the narrative form, and never
+    # present for the parenthetical form (it's the leading char there).
+    while author_body and author_body[-1] in "(,":
+        author_body = author_body[:-1].rstrip()
+    if author_body.startswith("("):
+        author_body = author_body[1:].rstrip()
+    if not author_body:
+        return None
+    # Normalise " and " to " & " for compactness in URLs / display.
+    author_body = re.sub(r"\s+and\s+", " & ", author_body, flags=re.IGNORECASE)
+
+    return {
+        "kind": "author_year",
+        "author": author_body,
+        "year": year + suffix,
+    }
+
+
+def is_in_text_citation(text: str) -> bool:
+    """Return True iff *text* matches an in-text citation pattern."""
+    return detect_in_text_citation(text) is not None
+
+
+__all__ = [
+    "Format",
+    "detect_format",
+    "is_likely_citation",
+    "detect_in_text_citation",
+    "is_in_text_citation",
+]

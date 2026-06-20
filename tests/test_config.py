@@ -225,3 +225,85 @@ def test_normalise_then_parse_always_works():
         normalised = cfg._normalise_hotkey(raw)
         parsed = _parse_with_pynput(normalised)
         assert parsed, f"pynput rejected {normalised!r} (from {raw!r})"
+
+
+# ---------------------------------------------------------------------------
+# route_mode (v1.2.3+)
+# ---------------------------------------------------------------------------
+#
+# Lock in: the config layer accepts the three documented values,
+# coerces bad values back to the default, and lower-cases the user's
+# input so "Auto" and "AUTO" work too.
+
+
+def test_route_mode_default_is_auto():
+    assert cfg.DEFAULT_ROUTE_MODE == "auto"
+    assert "auto" in cfg.VALID_ROUTE_MODES
+    assert "search_always" in cfg.VALID_ROUTE_MODES
+    assert "doi_always" in cfg.VALID_ROUTE_MODES
+
+
+def test_set_route_mode_persists_valid_value(tmp_path, monkeypatch):
+    """set_route_mode should accept the three documented values and
+    persist the lower-cased form."""
+    # Redirect the config dir so we don't touch the user's real config.
+    monkeypatch.setattr(cfg, "_config_dir", lambda: tmp_path)
+
+    for mode in ("auto", "search_always", "doi_always", "AUTO", "Search_Always"):
+        cfg.set_route_mode(mode)
+        loaded = cfg.load_config()
+        expected = mode.lower()
+        assert loaded["route_mode"] == expected, (
+            f"set_route_mode({mode!r}) should persist {expected!r}"
+        )
+
+
+def test_set_route_mode_rejects_unknown_value(tmp_path, monkeypatch):
+    """A typo / garbage value must NOT crash and must NOT pollute the
+    config — we coerce back to the default."""
+    monkeypatch.setattr(cfg, "_config_dir", lambda: tmp_path)
+
+    cfg.set_route_mode("totally bogus")
+    loaded = cfg.load_config()
+    assert loaded["route_mode"] == cfg.DEFAULT_ROUTE_MODE
+
+
+def test_load_config_coerces_legacy_route_mode(tmp_path, monkeypatch):
+    """An existing config.json with an unknown route_mode value should
+    be silently repaired on load, not crash the app."""
+    monkeypatch.setattr(cfg, "_config_dir", lambda: tmp_path)
+
+    # Hand-write a config with a bogus value.
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({
+        "hotkey": cfg.DEFAULT_HOTKEY,
+        "mailto": cfg.DEFAULT_MAILTO,
+        "similarity_threshold": cfg.DEFAULT_THRESHOLD,
+        "route_mode": "old_value_we_no_longer_support",
+        "engines": [],
+    }))
+
+    loaded = cfg.load_config()
+    assert loaded["route_mode"] == cfg.DEFAULT_ROUTE_MODE
+
+    # And it should be persisted in the repaired form (no need to keep
+    # reading the bad value on every startup).
+    on_disk = json.loads(cfg_file.read_text())
+    assert on_disk["route_mode"] == cfg.DEFAULT_ROUTE_MODE
+
+
+def test_load_config_normalises_route_mode_case(tmp_path, monkeypatch):
+    """User typed 'AUTO' or 'Search_Always' — we should normalise."""
+    monkeypatch.setattr(cfg, "_config_dir", lambda: tmp_path)
+
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({
+        "hotkey": cfg.DEFAULT_HOTKEY,
+        "mailto": cfg.DEFAULT_MAILTO,
+        "similarity_threshold": cfg.DEFAULT_THRESHOLD,
+        "route_mode": "SEARCH_ALWAYS",
+        "engines": [],
+    }))
+
+    loaded = cfg.load_config()
+    assert loaded["route_mode"] == "search_always"

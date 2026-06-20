@@ -150,6 +150,68 @@ def check_platform_utils_imports() -> None:
         print(f"  ok: platform_utils.{name}")
 
 
+def check_in_text_citation_detection() -> None:
+    banner("In-text citation detection + lookup")
+    from citation_hop.detector import detect_in_text_citation
+    from citation_hop.main import lookup
+    from citation_hop.engines import default_engines
+
+    cases = [
+        ("(Smith, 2020)",                "Smith",        "2020"),
+        ("Smith et al. (2020)",          "Smith et al.", "2020"),
+        ("(Titone & Connine, 1999)",     "Titone & Connine", "1999"),
+        ("(Heidari, 2025)",              "Heidari",      "2025"),
+    ]
+    for text, want_author, want_year in cases:
+        got = detect_in_text_citation(text)
+        assert got is not None, f"no match for {text!r}"
+        assert got["author"] == want_author, f"author mismatch: {got['author']!r}"
+        assert got["year"] == want_year, f"year mismatch: {got['year']!r}"
+
+    # End-to-end: lookup() must short-circuit in-text citations to the
+    # search engines, without calling Crossref.
+    engines = default_engines()
+    r = lookup("(Heidari, 2025)", engines=engines)
+    assert r["status"] == "in_text", f"expected in_text, got {r['status']}"
+    assert r["doi"] is None
+    assert "scholar.google.com" in r["url"]
+    assert "Heidari" in r["url"] and "2025" in r["url"]
+    print(f"  in-text lookup URL: {r['url']}")
+
+    # Negative: a paragraph that happens to contain "(Smith, 2020)"
+    # must NOT match the in-text detector (gate requires whole-string match).
+    prose = "Recent work (Smith, 2020) found that ..."
+    assert detect_in_text_citation(prose) is None
+    print("  in-text detector correctly rejects prose with embedded citation")
+
+
+def check_apa_title_extraction() -> None:
+    banner("APA plain-text title extraction")
+    from citation_hop.parser import parse_fields
+    from citation_hop.main import lookup
+    from citation_hop.engines import default_engines
+
+    apa = (
+        "Heidari, A. (2025). Thirty-five years of research on idioms in "
+        "SLA: A methodological review. Research Synthesis in Applied "
+        "Linguistics."
+    )
+    fields = parse_fields(apa)
+    assert fields["title"] is not None, "APA title should be extracted"
+    assert "Thirty-five years" in fields["title"]
+    assert fields["year"] == "2025"
+
+    engines = default_engines()
+    r = lookup(apa, engines=engines)
+    # No DOI in text → Crossref tries but fails (similarity below
+    # threshold) → Scholar fallback.  The Scholar URL must now include
+    # the parsed title so the search is meaningful.
+    assert r["status"] == "search"
+    assert "Thirty" in r["url"], f"title not in Scholar URL: {r['url']}"
+    assert "Heidari" in r["url"], f"author not in Scholar URL: {r['url']}"
+    print(f"  Scholar URL includes title+author: {r['url'][:120]}...")
+
+
 def main() -> int:
     print(f"Python:  {sys.version.split()[0]}")
     print(f"System:  {platform.system()} {platform.release()}")
@@ -162,6 +224,8 @@ def main() -> int:
         check_config_io()
         check_resolver_engines()
         check_platform_utils_imports()
+        check_in_text_citation_detection()
+        check_apa_title_extraction()
     except AssertionError as e:
         print(f"\nFAIL: {e}", file=sys.stderr)
         return 1

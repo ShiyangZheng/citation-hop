@@ -38,6 +38,11 @@ DEFAULT_HOTKEY = "<cmd>+<shift>+l" if IS_DARWIN else "<ctrl>+<shift>+l"
 DEFAULT_MAILTO = "syz@shiyangzheng.top"
 DEFAULT_THRESHOLD = 0.85
 
+# Valid values for the ``route_mode`` config key.  See
+# ``main.lookup`` for the semantics of each.
+VALID_ROUTE_MODES = ("auto", "search_always", "doi_always")
+DEFAULT_ROUTE_MODE = "auto"
+
 
 # ---------------------------------------------------------------------------
 # Hotkey migration
@@ -126,6 +131,7 @@ def _defaults() -> Dict[str, Any]:
         "mailto": DEFAULT_MAILTO,
         "similarity_threshold": DEFAULT_THRESHOLD,
         "engines": engines_to_dicts(default_engines()),
+        "route_mode": DEFAULT_ROUTE_MODE,
     }
 
 
@@ -173,6 +179,22 @@ def load_config() -> Dict[str, Any]:
             continue  # handled below
         if k in merged:
             merged[k] = v
+
+    # Validate route_mode — older configs may have a value we no
+    # longer accept, or a typo.  Coerce unknown values back to the
+    # default rather than crashing the app on load.  If we had to
+    # repair anything, persist the cleaned form so subsequent loads
+    # don't have to do this work (matches the hotkey-migration pattern
+    # above).
+    rm = merged.get("route_mode")
+    if not isinstance(rm, str) or rm.lower() not in VALID_ROUTE_MODES:
+        merged["route_mode"] = DEFAULT_ROUTE_MODE
+        save_config(merged)
+    else:
+        normalised_rm = rm.lower()
+        if normalised_rm != rm:
+            merged["route_mode"] = normalised_rm
+            save_config(merged)
 
     # Normalise a stale hotkey for the current platform: older versions
     # of citationHop stored ``cmd+shift+l`` (bare tokens), which pynput
@@ -245,6 +267,18 @@ def set_engine_enabled(engine_id: str, enabled: bool) -> Dict[str, Any]:
     return cfg
 
 
+def set_route_mode(mode: str) -> Dict[str, Any]:
+    """Update and persist the routing mode.  Returns the new full
+    config.  Unknown values are coerced to the default rather than
+    raising — the menu calls this with raw radio-item indices and we
+    don't want a config typo to brick the app."""
+    cfg = load_config()
+    m = (mode or "").lower().strip()
+    cfg["route_mode"] = m if m in VALID_ROUTE_MODES else DEFAULT_ROUTE_MODE
+    save_config(cfg)
+    return cfg
+
+
 def reset_engines() -> Dict[str, Any]:
     """Reset the engine list to the factory defaults.  Returns the
     new full config."""
@@ -259,11 +293,14 @@ __all__ = [
     "save_config",
     "set_hotkey",
     "set_engine_enabled",
+    "set_route_mode",
     "reset_engines",
     "config_path",
     "DEFAULT_HOTKEY",
     "DEFAULT_MAILTO",
     "DEFAULT_THRESHOLD",
+    "DEFAULT_ROUTE_MODE",
+    "VALID_ROUTE_MODES",
     "APP_NAME",
     "_normalise_hotkey",
 ]

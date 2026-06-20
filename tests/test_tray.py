@@ -324,3 +324,82 @@ def test_do_hotkey_work_calls_notify_with_subtitle_kwarg(monkeypatch):
         f"got args={args!r} kwargs={kwargs!r}"
     )
     assert "DOI copied" in kwargs["subtitle"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: pystray MenuItem._assert_action rejects argcount > 2.
+#
+# We previously used `lambda i, ii, m=mode: self._on_set_route_mode(m)` —
+# pystray sees that as co_argcount==3 and raises ValueError, taking the
+# whole tray down at construction. The fix is a 2-arg handler factory.
+# These tests pin both halves down:
+#   1. The route-mode menu items can actually be built (no ValueError).
+#   2. Clicking the right menu item routes to the right mode.
+# ---------------------------------------------------------------------------
+
+def test_route_mode_menu_items_build_without_valueerror(monkeypatch):
+    """All three route-mode items must construct without ValueError.
+
+    The previous bug (3-arg lambda) crashed here with:
+        ValueError: <function ... <locals>.<lambda> at 0x...>
+    """
+    from citation_hop import tray as _t
+
+    monkeypatch.setattr(_t, "load_config", lambda: {
+        "engines": [], "enabled": True, "hotkey": "<cmd>+<shift>+l",
+        "route_mode": "auto",
+    })
+
+    instance = _t.CitationHopTray.__new__(_t.CitationHopTray)
+    instance.cfg = {"route_mode": "auto"}
+    # notify / copy are best-effort; nothing should call them here.
+    monkeypatch.setattr(instance, "_on_set_route_mode",
+                        lambda mode: instance.cfg.update({"route_mode": mode}))
+
+    items = instance._route_mode_menu_items()
+    assert len(items) == 3, f"expected 3 items, got {len(items)}"
+
+    # Each item should expose its label and have a 2-arg action.
+    labels = [it.text for it in items]
+    assert any("Auto" in lbl for lbl in labels)
+    assert any("Always search" in lbl for lbl in labels)
+    assert any("Always DOI" in lbl for lbl in labels)
+
+    # Direct argcount check — belt-and-braces in case pystray changes
+    # what it accepts. Our handlers must take exactly 2 args.
+    for item in items:
+        action = item._action
+        assert hasattr(action, "__code__"), \
+            f"handler {item.text!r} has no __code__; pystray would reject it"
+        assert action.__code__.co_argcount == 2, (
+            f"handler {item.text!r} has co_argcount="
+            f"{action.__code__.co_argcount}, must be 2 (icon, item). "
+            f"pystray's MenuItem._assert_action will raise ValueError "
+            f"for any callable with more than 2 args."
+        )
+
+
+def test_route_mode_handler_closes_over_correct_mode(monkeypatch):
+    """Clicking the 'Always search' item must set route_mode='search_always'.
+
+    Defends against the classic late-binding bug: lambdas in a loop
+    would all close over the *last* mode if we used
+    `lambda i, ii: self._on_set_route_mode(mode)` without a default arg.
+    """
+    from citation_hop import tray as _t
+
+    instance = _t.CitationHopTray.__new__(_t.CitationHopTray)
+    instance.cfg = {"route_mode": "auto"}
+
+    captured = []
+    monkeypatch.setattr(instance, "_on_set_route_mode",
+                        lambda m: captured.append(m))
+
+    items = instance._route_mode_menu_items()
+    # Map item → mode via the label prefix.
+    for it, expected in zip(items, ("auto", "search_always", "doi_always")):
+        it._action(icon=None, item=it)
+    assert captured == ["auto", "search_always", "doi_always"], (
+        f"each item must close over its OWN mode, not the last loop value; "
+        f"got {captured!r}"
+    )
