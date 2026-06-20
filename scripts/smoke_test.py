@@ -248,13 +248,13 @@ def check_apa_title_extraction() -> None:
         assert r["url"], (
             f"status='doi' must carry a non-empty URL, got {r['url']!r}"
         )
-        print(f"  ✅ Crossref resolved: {r['doi']} → {r['url'][:60]}...")
+        print(f"  [OK] Crossref resolved: {r['doi']} -> {r['url'][:60]}...")
     elif r["status"] == "search":
         # Crossref did not resolve.  Scholar fallback must include
         # title + author so the search is meaningful.
         assert "Thirty" in r["url"], f"title not in Scholar URL: {r['url']}"
         assert "Heidari" in r["url"], f"author not in Scholar URL: {r['url']}"
-        print(f"  ✅ Scholar fallback includes title+author")
+        print(f"  [OK] Scholar fallback includes title+author")
     else:
         # Anything else is unexpected — fail loudly with the actual result.
         raise AssertionError(
@@ -283,7 +283,7 @@ def main() -> int:
         print(f"\nERROR: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
 
-    print("\nALL GREEN — safe to launch the GUI now.")
+    print("\nALL GREEN -- safe to launch the GUI now.")
     return 0
 
 
