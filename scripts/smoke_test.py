@@ -229,19 +229,26 @@ def check_apa_title_extraction() -> None:
     print(f"  lookup status: {r['status']}")
     print(f"  resolved DOI:  {r.get('doi')!r}")
     print(f"  lookup URL:    {r['url'][:120]}...")
+    sys.stdout.flush()
 
     # Either Crossref resolved it (v1.3 multi-signal scoring hit the
     # threshold), or it fell through to Scholar.  Both are valid.
     if r["status"] == "doi":
-        # Crossref resolved.  The URL must point at the DOI directly.
-        # It may be a doi.org URL (when Zotero isn't installed or isn't
-        # active) or a publisher URL / zotero:// URL (when Zotero is
-        # active).  We just verify the DOI made it into the result.
-        assert r["doi"], "status='doi' must carry a resolved DOI"
-        assert r["doi"] in r["url"], (
-            f"resolved DOI {r['doi']!r} not in URL {r['url']!r}"
+        # Crossref resolved.  The URL may be any of:
+        # - doi.org URL           (no Zotero / bypass inactive)
+        # - publisher direct URL  (Zotero bypass layer 2)
+        # - zotero://select URL   (Zotero bypass layer 1, v1.3)
+        # In the zotero:// case the DOI is NOT in the URL — it's a
+        # Zotero item key instead.  So we only require that the DOI
+        # is resolved (i.e. r["doi"] is a non-empty string) and the
+        # URL is non-empty.  We don't require DOI ⊂ URL.
+        assert r["doi"], (
+            f"status='doi' must carry a resolved DOI, got {r.get('doi')!r}"
         )
-        print(f"  ✅ Crossref resolved: {r['doi']}")
+        assert r["url"], (
+            f"status='doi' must carry a non-empty URL, got {r['url']!r}"
+        )
+        print(f"  ✅ Crossref resolved: {r['doi']} → {r['url'][:60]}...")
     elif r["status"] == "search":
         # Crossref did not resolve.  Scholar fallback must include
         # title + author so the search is meaningful.

@@ -370,6 +370,12 @@ def test_zotero_bypass_routes_to_scholar(monkeypatch):
     layer-3 Scholar fallback path.
     """
     from citation_hop import main as main_mod
+    # The Zotero bypass in main.py is gated on IS_DARWIN because the
+    # original v1.2.4 connector-interception bug was a macOS-only
+    # behaviour.  On Linux/Windows CI the module-level constant is
+    # False at import time, so the bypass never fires.  We patch it
+    # True here so the bypass code path is exercised on every OS.
+    monkeypatch.setattr(main_mod, "IS_DARWIN", True)
     monkeypatch.setattr(main_mod, "is_zotero_installed", lambda: True)
     monkeypatch.setattr("citation_hop.platform_utils.is_zotero_installed", lambda: True)
     # v1.3.0 layers that fire before the Scholar fallback:
@@ -408,6 +414,9 @@ def test_zotero_bypass_preserves_doi(monkeypatch):
     notification) can still show "DOI: 10.xxxx" to the user even
     though we're not opening doi.org."""
     from citation_hop import main as main_mod
+    # See the IS_DARWIN note in test_zotero_bypass_routes_to_scholar:
+    # we monkeypatch it True so the bypass gate fires on Linux/Windows CI.
+    monkeypatch.setattr(main_mod, "IS_DARWIN", True)
     monkeypatch.setattr(main_mod, "is_zotero_installed", lambda: True)
     monkeypatch.setattr("citation_hop.platform_utils.is_zotero_installed", lambda: True)
     monkeypatch.setattr(main_mod, "lookup_zotero_item_by_doi", lambda doi: None)
