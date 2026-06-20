@@ -620,15 +620,33 @@ def refresh_zotero_cache() -> None:
     _ZOTERO_CACHE.invalidate()
 
 
+# Standard Zotero.app install paths checked by the ``os.path.isdir``
+# fallback in ``_detect_zotero_running``.  Exposed as a module-level
+# constant so tests can monkeypatch it without rewriting the function.
+_ZOTERO_APP_CANDIDATES: tuple = (
+    "/Applications/Zotero.app",
+    "~/Applications/Zotero.app",
+    "/Applications/Zotero beta.app",
+    "~/Applications/Zotero beta.app",
+)
+
+
 def _detect_zotero_running() -> bool:
     """Check whether the Zotero desktop app is currently running.
 
     Strategy (in order of preference):
 
     1. ``pgrep -x zotero`` — fast, no FS access, race-free
-    2. Fallback: ``os.path.isdir`` on the four standard install paths
+    2. Fallback: ``os.path.isdir`` on the standard install paths
        (in case ``pgrep`` is missing — unusual on macOS but possible
        in stripped-down sandboxes)
+
+    The candidate paths live in :data:`_ZOTERO_APP_CANDIDATES` at
+    module scope so tests can ``monkeypatch.setattr(platform_utils,
+    "_ZOTERO_APP_CANDIDATES", ("/tmp/fake/Zotero.app",))`` to point
+    at a fixture path.  Without this, the test would have to monkey
+    with the FS at the *real* install locations, which is racy and
+    platform-dependent.
     """
     try:
         r = subprocess.run(
@@ -646,11 +664,8 @@ def _detect_zotero_running() -> bool:
     # default.  If they have the .app but never run it, the bypass
     # is still safe (just routes to Scholar instead of doi.org,
     # which works either way).
-    candidates = (
-        "/Applications/Zotero.app",
-        os.path.expanduser("~/Applications/Zotero.app"),
-        "/Applications/Zotero beta.app",
-        os.path.expanduser("~/Applications/Zotero beta.app"),
+    candidates = tuple(
+        os.path.expanduser(p) for p in _ZOTERO_APP_CANDIDATES
     )
     return any(os.path.isdir(p) for p in candidates)
 

@@ -468,13 +468,13 @@ def test_detect_zotero_running_falls_back_to_isdir(monkeypatch, tmp_path):
     monkeypatch.setattr(platform_utils.subprocess, "run", fake_run_fail)
     fake_app = tmp_path / "Zotero.app"
     fake_app.mkdir()
-    # os.path.isdir on the fake path returns True; everywhere else False.
-    real_isdir = platform_utils.os.path.isdir
-
-    def fake_isdir(p):
-        return p == str(fake_app) or real_isdir(p)
-
-    monkeypatch.setattr(platform_utils.os.path, "isdir", fake_isdir)
+    # Point the candidate list at our tmp_path fixture so the test
+    # doesn't have to touch the real /Applications tree (which is
+    # racy and not writable on CI).  v1.3.0 introduced this hook.
+    monkeypatch.setattr(
+        platform_utils, "_ZOTERO_APP_CANDIDATES",
+        (str(fake_app),),
+    )
     assert platform_utils._detect_zotero_running() is True
 
 
