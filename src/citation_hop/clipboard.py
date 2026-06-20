@@ -248,4 +248,82 @@ def copy_to_clipboard(text: str) -> None:
     pyperclip.copy(text)
 
 
-__all__ = ["get_selection", "copy_to_clipboard"]
+# ---------------------------------------------------------------------------
+# v1.3.1 — Reused-selection detection
+# ---------------------------------------------------------------------------
+#
+# Problem:
+# Zotero's PDF reader renders pages on a canvas and doesn't always sync
+# the user's mouse-highlighted selection with the OS pasteboard.  When
+# the user highlights a citation in the PDF body and presses ⌘⇧L,
+# citationHop's synthetic Cmd+C doesn't capture that highlight — it
+# captures whatever was *previously* on the pasteboard, which is usually
+# the right-panel "Item Details" reference of the *currently-open* PDF.
+# Result: every selection in Zotero's PDF reader resolves to the paper
+# the user is already reading, no matter what they actually highlighted.
+#
+# Mitigation:
+# Track the last few successful captures.  When the new capture matches
+# one of them, the user almost certainly didn't make a fresh selection —
+# flag it in the return value so the caller can show a helpful hint
+# instead of silently re-opening the same paper.  We don't *block* the
+# lookup (re-opening the same citation is sometimes legitimate) but the
+# notification gives the user a chance to press Cmd+C manually.
+#
+# This is a best-effort heuristic — there's no API to ask Zotero for the
+# actual canvas selection.  If the user is on a different platform or has
+# a different Zotero setup, the false-positive rate is low and the cost
+# is just one extra notification.
+
+_RECENT_CAPTURES: list[str] = []
+_RECENT_CAPTURES_LIMIT = 5
+_REUSE_RATIO = 0.95  # treat near-identical as reuse
+
+
+def _normalise_for_reuse_check(text: str) -> str:
+    """Strip whitespace and lowercase for cheap similarity check."""
+    return "".join((text or "").split()).lower()
+
+
+def was_selection_reused(new_text: str) -> bool:
+    """Return True if *new_text* is essentially identical to one of the
+    last few captures — i.e. the user probably didn't make a new selection.
+    """
+    if not new_text:
+        return False
+    new_norm = _normalise_for_reuse_check(new_text)
+    if not new_norm:
+        return False
+    for prev in _RECENT_CAPTURES:
+        prev_norm = _normalise_for_reuse_check(prev)
+        if not prev_norm:
+            continue
+        # Symmetric containment check; if either is a strict prefix of
+        # the other, they're probably the same selection (the user just
+        # highlighted a slightly different chunk of the same reference).
+        if prev_norm == new_norm:
+            return True
+        # Quick ratio: length ratio near 1 + same first 20 chars
+        ratio = len(new_norm) / len(prev_norm) if prev_norm else 0
+        if 0.8 <= ratio <= 1.25 and new_norm[:30] == prev_norm[:30]:
+            return True
+    return False
+
+
+def remember_capture(text: str) -> None:
+    """Push *text* onto the recent-captures ring buffer."""
+    global _RECENT_CAPTURES
+    if not text:
+        return
+    norm = _normalise_for_reuse_check(text)
+    if not norm:
+        return
+    # De-dup consecutive duplicates
+    if _RECENT_CAPTURES and _normalise_for_reuse_check(_RECENT_CAPTURES[0]) == norm:
+        return
+    _RECENT_CAPTURES.insert(0, text)
+    if len(_RECENT_CAPTURES) > _RECENT_CAPTURES_LIMIT:
+        _RECENT_CAPTURES = _RECENT_CAPTURES[:_RECENT_CAPTURES_LIMIT]
+
+
+__all__ = ["get_selection", "copy_to_clipboard", "was_selection_reused", "remember_capture"]

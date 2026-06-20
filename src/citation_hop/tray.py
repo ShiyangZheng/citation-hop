@@ -82,7 +82,12 @@ except Exception:  # noqa: BLE001 — backend init can raise many flavours
     _PYSTRAY_AVAILABLE = False
 
 from . import __version__
-from .clipboard import copy_to_clipboard, get_selection
+from .clipboard import (
+    copy_to_clipboard,
+    get_selection,
+    remember_capture,
+    was_selection_reused,
+)
 from .config import (
     VALID_ROUTE_MODES,
     config_path,
@@ -631,6 +636,34 @@ class CitationHopTray:
                 notify(_app_title(), "Doesn't look like a citation",
                        subtitle="Try selecting a full reference entry.")
                 return
+
+            # v1.3.1 — Zotero PDF reader selection quirk.
+            # Zotero's PDF reader uses a canvas-based renderer and
+            # doesn't always sync the user's mouse-highlighted selection
+            # with the OS pasteboard.  When that happens, our synthetic
+            # Cmd+C just copies whatever was last on the pasteboard
+            # (usually the right-panel "Item Details" reference of the
+            # currently-open PDF), so the user gets the same paper
+            # regardless of what they actually highlighted.
+            #
+            # Heuristic: if the captured text matches a recent capture
+            # (with at most minor whitespace / boundary differences),
+            # the user almost certainly didn't make a new selection.
+            # Surface a friendly hint instead of silently re-opening
+            # the same paper.
+            reused = was_selection_reused(text)
+            remember_capture(text)
+            if reused:
+                notify(
+                    _app_title(),
+                    "Looks like nothing new was selected",
+                    subtitle=(
+                        "Zotero's PDF reader may not have copied your "
+                        "new highlight. Try: select text \u2192 Cmd+C "
+                        "\u2192 \u2318\u21e7L."
+                    ),
+                )
+                return  # don't open the URL — wait for the user's manual Cmd+C
 
             url = result["url"]
             engine_used = result.get("engine_used")
