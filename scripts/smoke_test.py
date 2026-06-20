@@ -186,6 +186,26 @@ def check_in_text_citation_detection() -> None:
 
 
 def check_apa_title_extraction() -> None:
+    """Verify that the APA reference parser correctly extracts the
+    title and routes to the right destination.
+
+    Two acceptable outcomes exist for this test:
+
+    1. **Crossref resolved it** — when the v1.3 multi-signal scoring
+       gives the Heidari paper enough confidence to cross the
+       ``SIMILARITY_THRESHOLD`` (0.60), ``lookup()`` returns a
+       ``status='doi'`` with the publisher / doi.org URL.  This is
+       the *happy path* — the user gets the exact paper.
+
+    2. **Crossref did not resolve it** — if the live Crossref API
+       response differs (e.g. the paper was retracted, or the
+       scoring misses by 0.001), we fall through to Scholar.  The
+       Scholar fallback URL must include the parsed title and author
+       so the search is meaningful.
+
+    The test accepts either outcome, but it must NOT crash.  This
+    avoids CI flakes when the live Crossref corpus shifts.
+    """
     banner("APA plain-text title extraction")
     from citation_hop.parser import parse_fields
     from citation_hop.main import lookup
@@ -200,16 +220,39 @@ def check_apa_title_extraction() -> None:
     assert fields["title"] is not None, "APA title should be extracted"
     assert "Thirty-five years" in fields["title"]
     assert fields["year"] == "2025"
+    print(f"  parsed title: {fields['title']!r}")
+    print(f"  parsed author: {fields['author']!r}")
+    print(f"  parsed year:   {fields['year']!r}")
 
     engines = default_engines()
     r = lookup(apa, engines=engines)
-    # No DOI in text → Crossref tries but fails (similarity below
-    # threshold) → Scholar fallback.  The Scholar URL must now include
-    # the parsed title so the search is meaningful.
-    assert r["status"] == "search"
-    assert "Thirty" in r["url"], f"title not in Scholar URL: {r['url']}"
-    assert "Heidari" in r["url"], f"author not in Scholar URL: {r['url']}"
-    print(f"  Scholar URL includes title+author: {r['url'][:120]}...")
+    print(f"  lookup status: {r['status']}")
+    print(f"  resolved DOI:  {r.get('doi')!r}")
+    print(f"  lookup URL:    {r['url'][:120]}...")
+
+    # Either Crossref resolved it (v1.3 multi-signal scoring hit the
+    # threshold), or it fell through to Scholar.  Both are valid.
+    if r["status"] == "doi":
+        # Crossref resolved.  The URL must point at the DOI directly.
+        # It may be a doi.org URL (when Zotero isn't installed or isn't
+        # active) or a publisher URL / zotero:// URL (when Zotero is
+        # active).  We just verify the DOI made it into the result.
+        assert r["doi"], "status='doi' must carry a resolved DOI"
+        assert r["doi"] in r["url"], (
+            f"resolved DOI {r['doi']!r} not in URL {r['url']!r}"
+        )
+        print(f"  ✅ Crossref resolved: {r['doi']}")
+    elif r["status"] == "search":
+        # Crossref did not resolve.  Scholar fallback must include
+        # title + author so the search is meaningful.
+        assert "Thirty" in r["url"], f"title not in Scholar URL: {r['url']}"
+        assert "Heidari" in r["url"], f"author not in Scholar URL: {r['url']}"
+        print(f"  ✅ Scholar fallback includes title+author")
+    else:
+        # Anything else is unexpected — fail loudly with the actual result.
+        raise AssertionError(
+            f"unexpected lookup status {r['status']!r}: {r!r}"
+        )
 
 
 def main() -> int:
