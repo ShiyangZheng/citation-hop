@@ -8,9 +8,9 @@ Why
 ``main.lookup`` checks ``is_zotero_installed()`` at call time.  On
 the developer's Mac, Zotero really is installed (under
 ``/Applications/Zotero.app``), so the bypass fires and every test
-that expects a doi.org URL gets a Scholar URL instead.  The previous
-test suite pre-dated the bypass and asserted doi.org URLs, so it
-broke the moment the user installed Zotero.
+that expects a doi.org URL gets a publisher URL instead.  The test
+suite pre-dated the bypass and asserted doi.org URLs, so it broke
+the moment the user installed Zotero.
 
 We patch ``is_zotero_installed`` to return ``False`` in **all**
 tests by default — this preserves the existing test contract
@@ -23,7 +23,7 @@ return value back to ``True`` (see
 ``tests/test_lookup.py::test_zotero_bypass_routes_to_scholar`` for
 an example).
 
-We patch BOTH:
+We patch both:
 * ``citation_hop.platform_utils.is_zotero_installed``  (the canonical home)
 * ``citation_hop.main.is_zotero_installed``           (the imported alias)
 
@@ -33,9 +33,11 @@ binding to the function is fixed.  Patching only the canonical
 home leaves ``main.is_zotero_installed`` pointing at the real
 function — which still returns True on the dev's Mac.
 
-We also patch ``lookup_zotero_item_by_doi`` (added in v1.3.0)
-to return ``None`` so the new Zotero ``zotero://select`` deep-link
-fallback never fires in tests unless explicitly opted in.
+We also patch ``resolve_publisher_url`` to return ``None`` so the
+publisher-direct URL fallback never fires in tests unless explicitly
+opted in.  Without this, every test on the dev's Mac would need
+network access and would assert the actual publisher URL Crossref
+returns (which differs across publishers and changes over time).
 """
 
 from __future__ import annotations
@@ -45,8 +47,8 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _no_zotero_bypass(monkeypatch):
-    """Default every test to "Zotero not installed" and "DOI not in
-    Zotero library".
+    """Default every test to ``Zotero not installed`` and
+    ``publisher URL resolver returning None``.
 
     Individual tests that want the bypass active should re-patch
     inside the test body:
@@ -63,16 +65,18 @@ def _no_zotero_bypass(monkeypatch):
     monkeypatch.setattr(
         "citation_hop.main.is_zotero_installed", lambda: False
     )
-    # v1.3.0: also neutralise the new ``zotero://select`` deep-link
-    # fallback.  On the dev's Mac the DOI *is* in the Zotero library
-    # (because the developer has been adding papers while developing),
-    # so the deep-link fires and overrides the expected Scholar URL.
+    # v1.3.1: neutralise the publisher-direct URL fallback.  By
+    # default tests run without network, so we never want
+    # ``resolve_publisher_url`` to actually call Crossref — its
+    # result is non-deterministic and breaks the doi.org URL
+    # assertions.  Tests that want to exercise the publisher layer
+    # explicitly opt back in.
     monkeypatch.setattr(
-        "citation_hop.platform_utils.lookup_zotero_item_by_doi",
-        lambda doi: None,
+        "citation_hop.platform_utils.resolve_publisher_url",
+        lambda doi, timeout=4.0: None,
     )
     monkeypatch.setattr(
-        "citation_hop.main.lookup_zotero_item_by_doi",
-        lambda doi: None,
+        "citation_hop.main.resolve_publisher_url",
+        lambda doi, timeout=4.0: None,
     )
     yield

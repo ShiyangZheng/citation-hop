@@ -620,10 +620,11 @@ def refresh_zotero_cache() -> None:
     _ZOTERO_CACHE.invalidate()
 
 
-# Standard Zotero.app install paths checked by the ``os.path.isdir``
-# fallback in ``_detect_zotero_running``.  Exposed as a module-level
-# constant so tests can monkeypatch it without rewriting the function.
-_ZOTERO_APP_CANDIDATES: tuple = (
+# Candidate paths to look at when checking whether Zotero is installed.
+# Module-level constant so tests can ``monkeypatch.setattr`` it to inject
+# a ``tmp_path`` fixture without touching the real /Applications tree
+# (which is racy and not writable on CI).
+_ZOTERO_APP_CANDIDATES = (
     "/Applications/Zotero.app",
     "~/Applications/Zotero.app",
     "/Applications/Zotero beta.app",
@@ -640,13 +641,6 @@ def _detect_zotero_running() -> bool:
     2. Fallback: ``os.path.isdir`` on the standard install paths
        (in case ``pgrep`` is missing — unusual on macOS but possible
        in stripped-down sandboxes)
-
-    The candidate paths live in :data:`_ZOTERO_APP_CANDIDATES` at
-    module scope so tests can ``monkeypatch.setattr(platform_utils,
-    "_ZOTERO_APP_CANDIDATES", ("/tmp/fake/Zotero.app",))`` to point
-    at a fixture path.  Without this, the test would have to monkey
-    with the FS at the *real* install locations, which is racy and
-    platform-dependent.
     """
     try:
         r = subprocess.run(
@@ -664,10 +658,7 @@ def _detect_zotero_running() -> bool:
     # default.  If they have the .app but never run it, the bypass
     # is still safe (just routes to Scholar instead of doi.org,
     # which works either way).
-    candidates = tuple(
-        os.path.expanduser(p) for p in _ZOTERO_APP_CANDIDATES
-    )
-    return any(os.path.isdir(p) for p in candidates)
+    return any(os.path.isdir(os.path.expanduser(p)) for p in _ZOTERO_APP_CANDIDATES)
 
 
 _ZOTERO_CACHE = _TTLCache(_detect_zotero_running, ttl_seconds=60.0)
@@ -858,28 +849,46 @@ def zotero_select_url(key: str) -> str:
 
 
 def resolve_publisher_url(doi: str, timeout: float = 4.0) -> Optional[str]:
-    """Follow the ``doi.org/{doi}`` redirect server-side and return the
-    final publisher URL.
+    """Resolve a DOI to a publisher URL that Zotero's connector will *not*
+    intercept.
 
     Zotero's browser connector intercepts ``doi.org`` URLs in the
     browser and re-opens the *currently-selected* Zotero item instead
-    of letting the browser navigate to the publisher page.  But the
+    of letting the browser navigate to the publisher page.  The
     connector does **not** intercept publisher URLs (e.g.
-    ``https://www.tandfonline.com/doi/full/10.1080/...``).  By
-    resolving the redirect ourselves (an HTTP HEAD/GET that follows
-    301/302s) and handing the publisher URL to ``webbrowser.open``,
-    we give the user the actual paper page without Zotero getting in
-    the way.
+    ``https://www.tandfonline.com/doi/full/10.1080/...``,
+    ``https://benjamins.com/catalog/z.lt2.68sin``, or
+    ``https://www.degruyter.com/document/doi/...``).  So we resolve
+    the DOI ourselves and hand the publisher URL to ``webbrowser.open``.
 
-    Returns ``None`` on any failure (network error, timeout, missing
-    ``requests``, or the redirect didn't actually move us off
-    ``doi.org``).  Callers should fall back to
-    :func:`build_scholar_url` when this happens.
+    Resolution priority (v1.3.1)
+    ----------------------------
+    1. **Crossref ``resource`` field** (preferred).  Crossref stores
+       publisher URLs directly in ``message.resource.primary.URL``
+       (and sometimes a list under ``message.resource.secondary``).
+       These are the *publisher's own* URLs that the publisher told
+       Crossref to associate with this DOI.  No redirect chain, no
+       ``chooser.crossref.org`` intermediate, no flaky HEAD/GET dance
+       against the publisher — we get the URL in one REST call.
 
-    Note: we don't require a 2xx status code — many publishers return
-    403 to bot-like HTTP requests but load fine in a real browser.
-    The only thing we care about is: did the redirect chain move us
-    off ``doi.org``?  If yes, the publisher URL is usable.
+       For DOIs whose redirect chain ends at ``chooser.crossref.org``
+       (Benjamins does this — the redirect goes
+       ``doi.org → mr.crossref.org → chooser.crossref.org`` because
+       Benjamins 404s on the bot's HEAD request), the Crossref API
+       is the **only** reliable way to get the publisher URL.
+
+    2. **Manual doi.org redirect chain walk** (fallback).  We issue
+       HEAD against ``https://doi.org/{doi}`` with
+       ``allow_redirects=False`` and follow the ``Location`` header
+       manually for up to 5 hops.  Returns the last URL in the chain
+       whose host is a real publisher domain.
+
+    3. **Return ``None``** when neither path yields a usable URL.
+       Callers should fall back to :func:`build_scholar_url`.
+
+    We don't require a 2xx status code on the final URL — many
+    publishers return 403 / 404 to bot-like HTTP requests but load
+    fine in a real browser.
     """
     if not doi:
         return None
@@ -890,54 +899,134 @@ def resolve_publisher_url(doi: str, timeout: float = 4.0) -> Optional[str]:
         return None
 
     # Domains that are *not* real publisher pages — they're DOI registry
-    # intermediaries / chooser pages.  Landing here means the redirect
-    # didn't reach a usable destination, so we return None and let the
-    # caller fall back to Scholar search.
+    # intermediaries / chooser pages.  Used by the redirect-chain walker
+    # below to decide when the chain has reached a usable publisher.
     _REJECT_HOSTS = (
         "chooser.crossref.org",
         "data.crossref.org",
         "api.crossref.org",
-        "crossref.org",
+        "doi.crossref.org",
+        "mr.crossref.org",
+        "hdl.handle.net",
         "doi.org",
         "dx.doi.org",
-        "doi.crossref.org",
     )
 
-    def _is_usable(final_url: str) -> bool:
-        """True if *final_url* moved past doi.org AND isn't a known
-        intermediary landing page."""
-        if not final_url:
-            return False
+    def _host(url: str) -> str:
         from urllib.parse import urlparse
-        host = (urlparse(final_url).hostname or "").lower()
-        if not host:
-            return False
-        # Reject any host that ends with a known intermediary domain
-        # (covers both bare ``crossref.org`` and ``www.crossref.org``).
-        for bad in _REJECT_HOSTS:
-            if host == bad or host.endswith("." + bad):
-                return False
-        return True
+        return (urlparse(url).hostname or "").lower()
 
-    url = f"https://doi.org/{doi}"
-    headers = {"User-Agent": "citationHop/1.2 (+mailto:syz@shiyangzheng.top)"}
+    def _is_intermediary(url: str) -> bool:
+        h = _host(url)
+        if not h:
+            return True
+        if h == "crossref.org" or h.endswith(".crossref.org"):
+            return True
+        for bad in _REJECT_HOSTS:
+            if h == bad or h.endswith("." + bad):
+                return True
+        return False
+
+    def _try_crossref_resource(d: str) -> Optional[str]:
+        """Query Crossref's per-DOI record and pull out the
+        ``resource.primary.URL`` (and fall back to the first
+        ``resource.secondary[].URL`` if primary is missing or
+        an intermediary).
+
+        Returns the URL string, or None on any failure.
+        """
+        try:
+            resp = requests.get(
+                f"https://api.crossref.org/works/{d}",
+                timeout=timeout,
+                headers={
+                    "User-Agent": "citationHop/1.3 (+mailto:syz@shiyangzheng.top)",
+                    "Accept": "application/json",
+                },
+            )
+            if resp.status_code != 200:
+                return None
+            msg = (resp.json() or {}).get("message") or {}
+            resource = msg.get("resource") or {}
+            # Try primary first
+            primary = resource.get("primary", {}).get("URL")
+            if primary and not _is_intermediary(primary):
+                return primary
+            # Fall back to first secondary that's not an intermediary
+            for sec in resource.get("secondary") or []:
+                url = sec.get("URL") if isinstance(sec, dict) else None
+                if url and not _is_intermediary(url):
+                    return url
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("Crossref resource lookup failed for %s: %s", d, e)
+        return None
+
+    def _walk_redirects() -> Optional[str]:
+        """Manually walk the ``doi.org`` redirect chain.  Returns the
+        last URL in the chain whose host is a real publisher domain,
+        or ``None`` if every hop is an intermediary."""
+        start_url = f"https://doi.org/{doi}"
+        chain: list[str] = [start_url]
+        headers = {
+            "User-Agent": "citationHop/1.3 (+mailto:syz@shiyangzheng.top)",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+
+        def _walk_one(method: str) -> None:
+            current = start_url
+            for _ in range(6):  # 5 hops is the browser cap
+                try:
+                    resp = requests.request(
+                        method, current, allow_redirects=False,
+                        timeout=timeout, headers=headers,
+                        stream=(method == "GET"),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    LOG.debug("resolve_publisher_url hop failed (%s %s): %s", method, current, e)
+                    return
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("Location") or resp.headers.get("location")
+                    resp.close()
+                    if not location:
+                        return
+                    from urllib.parse import urljoin
+                    current = urljoin(current, location)
+                    chain.append(current)
+                    continue
+                resp.close()
+                # Terminal response — replace chain with the single URL
+                # we landed on (it's the end of THIS chain).
+                chain.clear()
+                chain.append(current)
+                return
+
+        for method in ("HEAD", "GET"):
+            _walk_one(method)
+            # After each method, scan the chain for a publisher URL
+            for url in reversed(chain):
+                if not _is_intermediary(url):
+                    return url
+            # If we hit a terminal response (chain was reset to one URL
+            # that's still an intermediary), don't bother trying the
+            # other method — the publisher itself responded with the
+            # intermediary page.
+            if len(chain) == 1 and _is_intermediary(chain[0]):
+                break
+        return None
+
+    # Strategy 1: Crossref resource URLs.
     try:
-        # HEAD first — cheaper, most DOI redirects support it.
-        resp = requests.head(url, allow_redirects=True, timeout=timeout,
-                             headers=headers)
-        final = resp.url or ""
-        if _is_usable(final):
-            return final
-        # Some publishers reject HEAD; fall back to GET with stream
-        # and close immediately to avoid downloading the full page.
-        resp = requests.get(url, allow_redirects=True, timeout=timeout,
-                            stream=True, headers=headers)
-        final = resp.url or ""
-        resp.close()
-        if _is_usable(final):
-            return final
+        result = _try_crossref_resource(doi)
+        if result:
+            return result
     except Exception as e:  # noqa: BLE001
-        LOG.debug("resolve_publisher_url failed for %s: %s", doi, e)
+        LOG.debug("resolve_publisher_url Crossref path failed for %s: %s", doi, e)
+
+    # Strategy 2: manual doi.org redirect walk.
+    try:
+        return _walk_redirects()
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("resolve_publisher_url redirect walk failed for %s: %s", doi, e)
     return None
 
 

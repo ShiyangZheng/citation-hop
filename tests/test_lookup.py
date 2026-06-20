@@ -378,9 +378,10 @@ def test_zotero_bypass_routes_to_scholar(monkeypatch):
     monkeypatch.setattr(main_mod, "IS_DARWIN", True)
     monkeypatch.setattr(main_mod, "is_zotero_installed", lambda: True)
     monkeypatch.setattr("citation_hop.platform_utils.is_zotero_installed", lambda: True)
-    # v1.3.0 layers that fire before the Scholar fallback:
-    monkeypatch.setattr(main_mod, "lookup_zotero_item_by_doi", lambda doi: None)
-    monkeypatch.setattr("citation_hop.platform_utils.lookup_zotero_item_by_doi", lambda doi: None)
+    # v1.3.1: only the publisher-direct fallback fires before Scholar
+    # now (the zotero://select layer was removed because it was a
+    # no-op when Zotero already had the target PDF open).  Patch the
+    # publisher resolver so the test exercises the Scholar fallback.
     monkeypatch.setattr(main_mod, "resolve_publisher_url", lambda doi, timeout=4.0: None)
     monkeypatch.setattr("citation_hop.platform_utils.resolve_publisher_url", lambda doi, timeout=4.0: None)
 
@@ -419,14 +420,85 @@ def test_zotero_bypass_preserves_doi(monkeypatch):
     monkeypatch.setattr(main_mod, "IS_DARWIN", True)
     monkeypatch.setattr(main_mod, "is_zotero_installed", lambda: True)
     monkeypatch.setattr("citation_hop.platform_utils.is_zotero_installed", lambda: True)
-    monkeypatch.setattr(main_mod, "lookup_zotero_item_by_doi", lambda doi: None)
-    monkeypatch.setattr("citation_hop.platform_utils.lookup_zotero_item_by_doi", lambda doi: None)
     monkeypatch.setattr(main_mod, "resolve_publisher_url", lambda doi, timeout=4.0: None)
     monkeypatch.setattr("citation_hop.platform_utils.resolve_publisher_url", lambda doi, timeout=4.0: None)
 
     r = lookup(APA, engines=_eng(), route_mode="auto")
     assert r["doi"] == "10.1038/nature12373"
     assert "scholar.google.com" in r["url"]
+
+
+def test_zotero_bypass_with_publisher_url_opens_publisher(monkeypatch):
+    """v1.3.1: when the Zotero bypass is active AND ``resolve_publisher_url``
+    successfully returns a publisher URL, the result is the publisher
+    URL — *not* a Scholar search.  This replaces the v1.3.0
+    ``zotero://select`` deep-link behaviour, which was a no-op when
+    Zotero was already displaying the target PDF.
+    """
+    from citation_hop import main as main_mod
+    monkeypatch.setattr(main_mod, "IS_DARWIN", True)
+    monkeypatch.setattr(main_mod, "is_zotero_installed", lambda: True)
+    monkeypatch.setattr(
+        "citation_hop.platform_utils.is_zotero_installed", lambda: True
+    )
+    # Mock resolve_publisher_url to return a known publisher URL
+    publisher = (
+        "https://www.tandfonline.com/doi/full/10.1080/29984475.2025.2486966"
+    )
+    monkeypatch.setattr(
+        main_mod, "resolve_publisher_url",
+        lambda doi, timeout=4.0: publisher,
+    )
+    monkeypatch.setattr(
+        "citation_hop.platform_utils.resolve_publisher_url",
+        lambda doi, timeout=4.0: publisher,
+    )
+
+    r = lookup(APA, engines=_eng(), route_mode="auto")
+    assert r["url"] == publisher
+    assert r["engine_used"] == "publisher_direct"
+    assert r["bypass_reason"] is not None
+
+
+def test_in_text_multi_cite_routes_to_first_author_year(monkeypatch):
+    """v1.3.1: parenthetical multi-citations like
+    ``(Sinclair 1966; Halliday 1961)`` are recognised as in-text
+    and routed to the search engine using the first cite's author+year.
+    """
+    r = lookup("(Sinclair 1966; Halliday 1961)",
+               engines=_eng(), route_mode="auto")
+    assert r["status"] == "in_text"
+    assert r["in_text"]["kind"] == "author_year_multi"
+    assert len(r["in_text"]["cites"]) == 2
+    assert r["in_text"]["cites"][0]["author"] == "Sinclair"
+    assert r["in_text"]["cites"][0]["year"] == "1966"
+    assert "Sinclair" in r["url"] and "1966" in r["url"]
+
+
+def test_in_text_single_cite_no_comma_supported(monkeypatch):
+    """v1.3.1: single-cite parenthetical without a comma between
+    author and year (``(Sinclair 1966)``) is now recognised.
+    """
+    r = lookup("(Sinclair 1966)", engines=_eng(), route_mode="auto")
+    assert r["status"] == "in_text"
+    assert r["in_text"]["kind"] == "author_year"
+    assert r["in_text"]["author"] == "Sinclair"
+    assert r["in_text"]["year"] == "1966"
+
+
+def test_in_text_multi_cite_with_et_al_supported(monkeypatch):
+    """v1.3.1: parenthetical multi-cite where one cite is
+    ``Smith et al. 2020`` is recognised.
+    """
+    r = lookup(
+        "(Sinclair 1966; Halliday 1961; Smith et al. 2020)",
+        engines=_eng(), route_mode="auto",
+    )
+    assert r["status"] == "in_text"
+    assert r["in_text"]["kind"] == "author_year_multi"
+    assert len(r["in_text"]["cites"]) == 3
+    assert r["in_text"]["cites"][2]["author"] == "Smith et al."
+    assert r["in_text"]["cites"][2]["year"] == "2020"
 
 
 def test_zotero_bypass_inactive_when_not_installed(monkeypatch):

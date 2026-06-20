@@ -46,9 +46,7 @@ from .platform_utils import (
     build_scholar_url,
     clean_zotero_noise,
     is_zotero_installed,
-    lookup_zotero_item_by_doi,
     resolve_publisher_url,
-    zotero_select_url,
 )
 from .resolver import (
     build_doi_url,
@@ -118,17 +116,31 @@ def lookup(
     # than "wait 1-2 s, then probably open the wrong paper".
     in_text = detect_in_text_citation(text)
     if in_text is not None:
+        # Multi-cite parenthetical form (Smith, 2020; Jones, 2021)
+        # references multiple papers.  We can't open them all from one
+        # hotkey press, so we route the *first* cite through the normal
+        # search engine path — that's the paper the user is most
+        # likely to want.  The result dict keeps the full cite list
+        # under ``in_text.cites`` so the tray notification can say
+        # "Smith, 2020 (1 of 2)" etc.
+        if in_text.get("kind") == "author_year_multi" and in_text.get("cites"):
+            first = in_text["cites"][0]
+            author = first["author"]
+            year = first["year"]
+        else:
+            author = in_text.get("author")
+            year = in_text.get("year")
         fields = {
             "title": None,
-            "author": in_text.get("author"),
-            "year": in_text.get("year"),
+            "author": author,
+            "year": year,
             "doi": None,
         }
         url = build_search_url(text, fields, engine_list, mailto=mailto)
         if url is None:
             # No search engine enabled — build a Scholar URL from the
             # parsed fields so the hotkey still does something useful.
-            url = _scholar_fallback(in_text["author"], in_text["year"])
+            url = _scholar_fallback(author, year)
             engine_used = "scholar_fallback"
         else:
             engine_used = _first_enabled_id(engine_list, "search_url") or "search_url"
@@ -209,43 +221,31 @@ def lookup(
         }
 
     # Stage 6: no DOI, or search_always, or Zotero bypass — build a
-    # search URL.  When the Zotero bypass is active we try five things
+    # search URL.  When the Zotero bypass is active we try two things
     # in order of preference:
     #
-    # 1. **Zotero select URL** — if the DOI exists in the user's local
-    #    Zotero library, open ``zotero://select/library/items/<KEY>``.
-    #    Zotero itself handles this URL (it's registered as a
-    #    ``zotero://`` scheme handler), bringing the right item to
-    #    the front regardless of what's currently open.  This is the
-    #    most reliable path for users who keep their library in Zotero,
-    #    because there's no browser involved to intercept anything.
-    # 2. **Publisher URL** — follow the doi.org redirect server-side
-    #    and open the publisher's direct URL (e.g.
-    #    ``tandfonline.com/doi/full/...``).  In practice some Zotero
-    #    installations also intercept publisher URLs via the Safari
-    #    connector, but most users get the right page this way.
-    # 3. **Scholar search by DOI** — Scholar handles DOI queries well.
-    # 4. **Scholar search by cleaned text** — fall back to text-based
-    #    search when no DOI is available.
+    # 1. **Publisher URL** — resolve the DOI via Crossref's
+    #    ``resource.primary.URL`` / ``resource.secondary[].URL``
+    #    field (one REST call to api.crossref.org), with a manual
+    #    doi.org redirect-chain walk as fallback.  We hand the
+    #    publisher URL (e.g. ``tandfonline.com/doi/full/...``,
+    #    ``benjamins.com/catalog/z.lt2.68sin``) to ``webbrowser.open``.
+    #    Zotero's connector only intercepts doi.org, so the publisher
+    #    page opens correctly regardless of which PDF is currently
+    #    showing in Zotero.
+    #
+    #    Earlier v1.3.0 had a "Zotero deep-link" layer that opened
+    #    ``zotero://select/library/items/<KEY>``.  That layer was
+    #    removed in v1.3.1 because ``zotero://select`` is a no-op
+    #    when Zotero is already showing that very PDF — which is
+    #    exactly the situation the user is in when they hit the
+    #    hotkey to navigate away from it.
+    #
+    # 2. **Scholar search by DOI** — Scholar handles DOI queries
+    #    well and returns the exact paper as the first result.
+    #    Falls back to Scholar search by cleaned citation text when
+    #    no DOI is available.
     if bypass_reason:
-        # 1. Try Zotero's own URL scheme (most reliable — no browser).
-        zotero_url = None
-        if doi:
-            z_item = lookup_zotero_item_by_doi(doi)
-            if z_item and z_item.get("key"):
-                zotero_url = zotero_select_url(z_item["key"])
-        if zotero_url:
-            _LOG.info("Zotero bypass: opened Zotero item via %s", zotero_url)
-            return {
-                "status": "doi",
-                "url": zotero_url,
-                "doi": doi,
-                "title": fields.get("title"),
-                "engine_used": "zotero_select",
-                "bypass_reason": bypass_reason,
-            }
-
-        # 2. Publisher direct URL.
         publisher_url = None
         if doi:
             publisher_url = resolve_publisher_url(doi)
@@ -259,7 +259,8 @@ def lookup(
                 "engine_used": "publisher_direct",
                 "bypass_reason": bypass_reason,
             }
-        # 3 / 4. Scholar search fallback.
+        # Fall back to Scholar — use the DOI string (cleanest query)
+        # if we have it, otherwise the cleaned citation text.
         if doi:
             url = build_scholar_url(doi)
         else:

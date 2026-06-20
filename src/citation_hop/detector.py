@@ -107,7 +107,7 @@ _IN_TEXT_AUTHOR_BODY = (
 _IN_TEXT_PAREN_RE = re.compile(
     r"^\s*\(\s*"
     + _IN_TEXT_AUTHOR_BODY +
-    r"\s*,\s*"
+    r"\s*,?\s*"                                # comma optional (Chicago/Harvard)
     r"(?P<year>(?:19|20)\d{2})(?P<suffix>[a-z])?"
     r"\s*\)\s*$",
     re.IGNORECASE,
@@ -122,11 +122,28 @@ _IN_TEXT_NARRATIVE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Multiple parenthetical citations separated by semicolons:
+#   (Smith, 2020; Jones, 2021)
+#   (Sinclair 1966; Halliday 1961)            ← no comma between author and year
+#   (Smith, 2020a; Jones, 2021b)
+# Each inner cite is: Surname [optional ,] YEAR[a-z]
+_IN_TEXT_MULTI_PAREN_RE = re.compile(
+    r"^\s*\(\s*"
+    r"[A-Z][a-zA-Z\-']+(?:\s+et\s+al\.?)?"
+    r"\s*,?\s*"
+    r"(?:19|20)\d{2}[a-z]?"
+    r"(?:\s*;\s*[A-Z][a-zA-Z\-']+(?:\s+et\s+al\.?)?\s*,?\s*(?:19|20)\d{2}[a-z]?)+"
+    r"\s*\)\s*$",
+    re.IGNORECASE,
+)
+
 # Upper bound on in-text citation length: parenthetical form with
 # "Surname et al." + year + suffix is ~32 chars; a worst-case
 # "Surname, A. B., & Surname, C. D." (APA 21+ authors) can hit ~50.
 # We use 80 to leave headroom for non-breaking spaces, etc.
-_IN_TEXT_MAX_LEN = 80
+# Upper bound extended to 200 to accommodate parenthetical multi-cites
+# like ``(Sinclair 1966; Halliday 1961; Smith et al. 2020)``.
+_IN_TEXT_MAX_LEN = 200
 
 
 def detect_format(text: str) -> Optional[Format]:
@@ -205,6 +222,41 @@ def detect_in_text_citation(text: str) -> Optional[dict]:
     stripped = text.strip()
     if not stripped or len(stripped) > _IN_TEXT_MAX_LEN:
         return None
+
+    # Multi-cite parenthetical form: (Smith, 2020; Jones, 2021).
+    # We detect this first because the multi-paren regex is more
+    # specific than the single-paren one.  For multi-cite we don't
+    # return a single author/year — we return a list of cite dicts
+    # under the "cites" key so the caller can fall through to the
+    # full-reference detector (since a single in-text reference may
+    # resolve to multiple DOIs).
+    multi = _IN_TEXT_MULTI_PAREN_RE.match(stripped)
+    if multi:
+        # Extract each (Author, Year) pair from the matched text.
+        body = stripped[1:-1]  # strip outer parens
+        cites = []
+        for part in body.split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            # Author = leading run of letters/spaces, year = 4 digits
+            mm = re.match(
+                r"(?P<author>[A-Z][a-zA-Z\-']+(?:\s+et\s+al\.?)?)"
+                r"\s*,?\s*"
+                r"(?P<year>(?:19|20)\d{2})(?P<suffix>[a-z])?",
+                part,
+                re.IGNORECASE,
+            )
+            if mm:
+                cites.append({
+                    "author": mm.group("author").strip(),
+                    "year": mm.group("year") + (mm.group("suffix") or ""),
+                })
+        if cites:
+            return {
+                "kind": "author_year_multi",
+                "cites": cites,
+            }
 
     m = _IN_TEXT_PAREN_RE.match(stripped) or _IN_TEXT_NARRATIVE_RE.match(stripped)
     if not m:
