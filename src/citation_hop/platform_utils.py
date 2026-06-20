@@ -282,6 +282,10 @@ def simulate_copy() -> None:
     of which re-enters the listener.
     """
     if IS_DARWIN:
+        # Quartz events first (real HID-level, Zotero PDF reader
+        # sees them); fall back to AppleScript if PyObjC isn't around.
+        if _simulate_copy_quartz():
+            return
         _simulate_copy_applescript()
         return
 
@@ -305,11 +309,84 @@ def simulate_copy() -> None:
         LOG.debug("pynput Controller failed on %s", SYSTEM, exc_info=True)
 
 
+def _simulate_copy_quartz() -> bool:
+    """Send a synthetic Cmd+C using macOS Quartz Event Services.
+
+    Returns ``True`` on success, ``False`` if PyObjC isn't installed
+    or the event post failed.
+
+    Why this is the primary path on macOS (2026-06-21)
+    -------------------------------------------------
+    ``osascript`` System Events fires the keystroke through a
+    *separate* System Events process, and Zotero's PDF reader
+    (PDF.js based, runs inside a webview) only honours real
+    ``keydown`` events on the focused iframe — System Events
+    synthetic events go to the Zotero process but stop at the
+    process boundary in a way that the webview's ``addEventListener``
+    never sees them.  ``CGEventCreateKeyboardEvent`` posted at
+    ``kCGSessionEventTap`` produces a real HID event that flows
+    through the macOS keyboard dispatcher into whichever window
+    currently owns key focus, iframe included.  Zotero's PDF.js
+    selection-copy handler then fires correctly and writes the
+    user-selected text to the clipboard.
+
+    Re-entrancy note
+    ----------------
+    Earlier versions routed through pynput's ``Controller`` (which
+    also uses ``CGEventPost`` internally).  That path crashes with
+    ``SIGILL`` on Apple Silicon when called from inside pynput's
+    own keyboard listener — the synthetic event re-enters our HID
+    event tap.  We call Quartz events from a *worker thread*
+    (``tray._do_hotkey_work``), not from the pynput listener
+    itself, so the re-entrancy doesn't apply here.
+
+    Permissions
+    -----------
+    ``kCGSessionEventTap`` does not require root.  On macOS 13+ the
+    calling process may need *Input Monitoring* permission; most
+    users have no such restriction, so this just works.
+    """
+    if not IS_DARWIN:
+        return False
+    try:
+        from Quartz import (  # type: ignore
+            CGEventCreateKeyboardEvent,
+            CGEventPost,
+            CGEventSetFlags,
+            kCGSessionEventTap,
+            kCGEventFlagMaskCommand,
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        # kVK_ANSI_C = 8 on a US keyboard layout.  Cmd+C is recognised
+        # at the OS level via the Cmd modifier flag, so the raw keycode
+        # is correct regardless of layout.
+        ev_down = CGEventCreateKeyboardEvent(None, 8, True)
+        CGEventSetFlags(ev_down, kCGEventFlagMaskCommand)
+        CGEventPost(kCGSessionEventTap, ev_down)
+        # Tiny inter-event gap so the keyup isn't coalesced with the
+        # keydown.  10 ms is well below human perception but enough
+        # for the WindowServer to deliver two distinct events.
+        time.sleep(0.01)
+        ev_up = CGEventCreateKeyboardEvent(None, 8, False)
+        CGEventPost(kCGSessionEventTap, ev_up)
+        return True
+    except Exception:  # noqa: BLE001
+        LOG.debug("Quartz Cmd+C failed", exc_info=True)
+        return False
+
+
 def _simulate_copy_applescript() -> None:
     """Send a synthetic Cmd+C via AppleScript System Events.
 
-    Used on macOS as the primary path (not just a fallback) to avoid
-    the CGEventTap re-entrancy crash described in :func:`simulate_copy`.
+    Used on macOS as the **fallback** when Quartz Event Services
+    isn't available (older PyObjC install, missing framework, etc).
+    See :func:`_simulate_copy_quartz` for why Quartz is the primary
+    path on modern macOS.
+
+    Requires the **Automation → System Events** permission for the
+    calling process (terminal or bundled .app).
 
     Requires the **Automation → System Events** permission for the
     calling process (terminal or bundled .app).  On macOS 13+ this is

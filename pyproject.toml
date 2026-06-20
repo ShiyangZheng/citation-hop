@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "citation-hop"
-version = "1.3.0"
+version = "1.3.3"
 description = "Fully cross-platform (macOS / Windows / Linux) menu-bar / system-tray app: select a citation anywhere, press a hotkey, open the paper. Native tray, global hotkey, 15 search engines, Zotero deep-link integration, multi-signal Crossref scoring."
 readme = "README.md"
 license = { text = "MIT" }

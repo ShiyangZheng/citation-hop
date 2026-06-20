@@ -198,11 +198,20 @@ def test_notify_handles_no_subtitle(monkeypatch):
 # silently reintroduce the crash.
 
 def test_simulate_copy_dispatches_to_applescript_on_macos(monkeypatch):
-    """On macOS, simulate_copy must call AppleScript, never pynput
-    Controller.  Mock subprocess.run and assert it was invoked with
-    the expected osascript payload."""
+    """On macOS, simulate_copy must call AppleScript as a fallback,
+    never pynput Controller (which crashes with SIGILL).  The
+    primary path on modern macOS is Quartz Event Services
+    (CGEventCreateKeyboardEvent), but if PyObjC isn't installed
+    we fall through to AppleScript.  This test patches out the
+    Quartz path so we can verify the AppleScript fallback still
+    works."""
     if not platform_utils.IS_DARWIN:
         pytest.skip("macOS-only behaviour")
+
+    # Force the Quartz primary path to fail so we exercise the
+    # AppleScript fallback.  Simulating a missing PyObjC install
+    # is hard, so we just patch the helper to return False.
+    monkeypatch.setattr(platform_utils, "_simulate_copy_quartz", lambda: False)
 
     calls = []
 
@@ -242,6 +251,55 @@ def test_simulate_copy_dispatches_to_applescript_on_macos(monkeypatch):
     script = apple[-1]  # the osascript -e <script> payload
     assert 'keystroke "c"' in script
     assert "command down" in script
+
+
+def test_simulate_copy_prefers_quartz_on_macos(monkeypatch):
+    """On macOS, when Quartz is available, simulate_copy must use it
+    rather than falling through to AppleScript.  This is the v1.3.3
+    fix — Zotero PDF reader's iframe-based keydown handler doesn't
+    see System Events synthetic events, but it DOES see real HID
+    events posted via Quartz."""
+    if not platform_utils.IS_DARWIN:
+        pytest.skip("macOS-only behaviour")
+
+    quartz_calls = []
+
+    monkeypatch.setattr(
+        platform_utils, "_simulate_copy_quartz",
+        lambda: quartz_calls.append(1) or True,
+    )
+
+    def should_not_run(*args, **kwargs):
+        raise AssertionError(
+            "simulate_copy should NOT have fallen through to "
+            "AppleScript when Quartz succeeded"
+        )
+
+    monkeypatch.setattr(platform_utils.subprocess, "run", should_not_run)
+    platform_utils.simulate_copy()
+    assert quartz_calls == [1]
+
+
+def test_simulate_copy_quartz_missing_falls_back(monkeypatch):
+    """If Quartz is not importable (older PyObjC, framework missing),
+    simulate_copy must still send Cmd+C via AppleScript as the
+    fallback.  Patches both the Quartz import and the import error
+    path to simulate the missing-framework case."""
+    if not platform_utils.IS_DARWIN:
+        pytest.skip("macOS-only behaviour")
+
+    # Patch _simulate_copy_quartz to simulate "PyObjC not installed"
+    monkeypatch.setattr(platform_utils, "_simulate_copy_quartz", lambda: False)
+
+    calls = []
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        import subprocess
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+    monkeypatch.setattr(platform_utils.subprocess, "run", fake_run)
+
+    platform_utils.simulate_copy()
+    assert any("osascript" in c[0] for c in calls)
 
 
 def test_simulate_copy_dispatches_to_pynput_controller_on_win_linux(monkeypatch):

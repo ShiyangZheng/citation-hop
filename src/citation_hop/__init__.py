@@ -66,5 +66,5 @@ v1.1 highlights
   menu, or edit the JSON config to reorder, rename, or add your own.
 """
 
-__version__ = "1.3.0"
+__version__ = "1.3.3"
 __all__ = ["__version__"]
